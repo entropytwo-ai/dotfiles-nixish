@@ -1,0 +1,22 @@
+# dotfiles-nixish package list (reference only - install.sh holds the real mapping)
+#
+# logical    | apt (Debian/Ubuntu)        | dnf (Fedora/RHEL)  | pacman (Arch) | zypper (openSUSE) | apk (Alpine)
+# -----------+----------------------------+--------------------+---------------+-------------------+-------------
+eza          | eza  (or deb.gierens.de / GitHub binary fallback)   | eza (GitHub binary fallback) | eza | eza | eza
+duf          | duf                        | duf                | duf           | duf               | duf
+cowsay       | cowsay                     | cowsay             | cowsay        | cowsay            | cowsay
+fortune      | fortune-mod                | fortune-mod        | fortune-mod   | fortune           | fortune
+fastfetch    | fastfetch (GitHub .deb fallback) | fastfetch (GitHub .rpm fallback) | fastfetch | fastfetch | fastfetch
+tldr         | tldr / tealdeer            | tldr / tealdeer    | tealdeer/tldr | tealdeer / tldr   | tealdeer
+nmap         | nmap                       | nmap               | nmap          | nmap              | nmap
+ncdu         | ncdu                       | ncdu               | ncdu          | ncdu              | ncdu
+btop         | btop                       | btop               | btop          | btop              | btop
+fzf          | fzf                        | fzf                | fzf           | fzf               | fzf
+glances      | glances                    | glances            | glances       | glances           | glances
+curl         | curl                       | curl               | curl          | curl              | curl
+bat          | bat (binary: batcat)       | bat                | bat           | bat               | bat
+
+# prerequisites / helpers
+git wget gpg (gnupg) ca-certificates lsb-release acl (getfacl for xtree -A) tar
+zsh is NOT installed automatically - if it is present, ~/.zshrc gets configured too.
+# extra repo: EPEL is enabled automatically on RHEL/Rocky/Alma/CentOS Stream
