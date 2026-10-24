@@ -1,5 +1,28 @@
 #!/usr/bin/env bash
 
+# Colour helper (shadows `tput` for the calls below). Some consoles/SSH clients
+# report TERM=vt102/vt220, whose terminfo has no colours, so real tput prints
+# nothing - yet they render ANSI colours fine. Fall back to raw ANSI codes then,
+# and downgrade 256-colour indexes on 8/16-colour terminals (TERM=linux turns
+# `setaf 214` into a broken sequence). NO_COLOR or TERM=dumb disables colours.
+_XT_NCOLORS=$(command tput colors 2>/dev/null) || _XT_NCOLORS=-1
+[[ "$_XT_NCOLORS" =~ ^[0-9]+$ ]] || _XT_NCOLORS=-1
+tput() {
+  if [[ -n "${NO_COLOR:-}" || "${TERM:-dumb}" == dumb ]]; then return 0; fi
+  case "$1" in
+    setaf)
+      local n=$2
+      if (( n > 15 && _XT_NCOLORS < 256 )); then n=3; fi          # e.g. orange -> yellow
+      if (( _XT_NCOLORS >= 8 )); then command tput setaf "$n" 2>/dev/null && return 0; fi
+      if (( n < 8 )); then printf '\033[3%dm' "$n"
+      elif (( n < 16 )); then printf '\033[9%dm' $((n - 8))
+      else printf '\033[38;5;%dm' "$n"; fi ;;
+    bold) printf '\033[1m' ;;
+    sgr0) printf '\033[0m' ;;
+    *)    command tput "$@" 2>/dev/null ;;
+  esac
+}
+
 # Function to set color scheme
 set_color_scheme() {
   local scheme=$1
