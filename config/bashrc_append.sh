@@ -7,7 +7,7 @@
 case ":$PATH:" in *:/usr/games:*) ;; *) [ -d /usr/games ] && PATH="$PATH:/usr/games" ;; esac
 case ":$PATH:" in *:/usr/local/bin:*) ;; *) PATH="/usr/local/bin:$PATH" ;; esac
 # Nix user profiles (NixOS / Nix on other distros) - where eza etc. live there
-for _d in "$HOME/.nix-profile/bin" "$HOME/.local/state/nix/profile/bin" "/etc/profiles/per-user/$USER/bin"; do
+for _d in "$HOME/.local/bin" "$HOME/.nix-profile/bin" "$HOME/.local/state/nix/profile/bin" "/etc/profiles/per-user/$USER/bin"; do
     case ":$PATH:" in *":$_d:"*) ;; *) [ -d "$_d" ] && PATH="$_d:$PATH" ;; esac
 done; unset _d
 export PATH
@@ -45,7 +45,7 @@ fi
 alias cowsays='{ [ -d /etc/update-motd.d ] && run-parts /etc/update-motd.d/; }; fastfetch --logo <(fortune | cowsay -W 30) --logo-color-1 cyan --logo-color-2 yellow'
 
 # xtree
-[ -x /usr/local/bin/xtree ] && alias xtree='/usr/local/bin/xtree'   # else xtree comes from PATH (e.g. the NixOS module)
+[ -x /usr/local/bin/xtree ] && alias xtree='/usr/local/bin/xtree'   # else xtree comes from PATH (~/.local/bin fallback or the NixOS module)
 
 # --- Greeting (interactive shells only) -----------------------------------------
 if [[ $- == *i* ]] && command -v fastfetch >/dev/null 2>&1; then

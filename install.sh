@@ -68,7 +68,10 @@ if [[ $EUID -eq 0 ]]; then
     SUDO=()
 else
     have sudo || die "sudo is required (or run this script as root)."
-    SUDO=(sudo)
+    # Pass our PATH through: sudo's secure_path (and sudo-rs defaults) point at
+    # /usr/bin:/bin, which on NixOS holds no coreutils - `sudo install` would fail.
+    # (sbin dirs appended: they are in secure_path but often not in a user's PATH)
+    SUDO=(sudo "$(command -v env)" "PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin")
     step "Requesting sudo (needed for package installs and /usr/local/bin)"
     sudo -v || die "Could not obtain sudo privileges."
     # keep sudo alive while we work
@@ -468,17 +471,38 @@ fi
 #  5. xtree -> /usr/local/bin/xtree  +  ~/xtree symlink
 # =============================================================================
 step "Installing xtree"
-"${SUDO[@]}" mkdir -p /usr/local/bin
-if "${SUDO[@]}" install -m 0755 "$SRC_DIR/scripts/xtree.sh" "$XTREE_BIN"; then
-    ok "$XTREE_BIN"
+XT_TEST_DIR="$(mktemp -d)"
+XT_OUT=""
+xtree_works() {   # actually run it (tiny dir; capture first - grep -q + pipefail = SIGPIPE false negatives)
+    [[ -f "$1" && -x "$1" ]] || { XT_OUT="$1 not found"; return 1; }
+    XT_OUT="$(TERM=dumb "$1" -L 1 "$XT_TEST_DIR" 2>&1)"
+    [[ "$XT_OUT" == *Name* ]]
+}
+
+"${SUDO[@]}" mkdir -p /usr/local/bin \
+    && "${SUDO[@]}" install -m 0755 "$SRC_DIR/scripts/xtree.sh" "$XTREE_BIN"
+if xtree_works "$XTREE_BIN"; then
+    ok "$XTREE_BIN (self-test passed)"
 else
-    warn "Failed to install $XTREE_BIN"
+    # Fall back to a user-owned location that is always writable and on PATH
+    USER_XTREE="$TARGET_HOME/.local/bin/xtree"
+    warn "Could not install $XTREE_BIN - using $USER_XTREE instead"
+    mkdir -p "$TARGET_HOME/.local/bin" && install -m 0755 "$SRC_DIR/scripts/xtree.sh" "$USER_XTREE"
+    fix_owner "$TARGET_HOME/.local" "$TARGET_HOME/.local/bin" "$USER_XTREE"
+    XTREE_BIN="$USER_XTREE"
+    if xtree_works "$XTREE_BIN"; then ok "$XTREE_BIN (self-test passed)"
+    else warn "xtree self-test FAILED: $(printf '%s' "$XT_OUT" | head -2 | tr '\n' ' ')"; fi
 fi
+rm -rf "$XT_TEST_DIR"
 LINK="$TARGET_HOME/xtree"
 if [[ -e "$LINK" && ! -L "$LINK" ]]; then
     mv "$LINK" "$LINK.bak.$TS" && info "Existing ~/xtree moved to ~/xtree.bak.$TS"
 fi
-ln -sfn "$XTREE_BIN" "$LINK" && fix_owner "$LINK" && ok "$LINK -> $XTREE_BIN"
+if [[ -x "$XTREE_BIN" ]]; then
+    ln -sfn "$XTREE_BIN" "$LINK" && fix_owner "$LINK" && ok "$LINK -> $XTREE_BIN"
+else
+    [[ -L "$LINK" && ! -e "$LINK" ]] && rm -f "$LINK"   # never leave a dangling ~/xtree
+fi
 
 # =============================================================================
 #  6. Shell config (idempotent BEGIN/END block)
