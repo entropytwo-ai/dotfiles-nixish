@@ -344,6 +344,20 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]]; then
     step "Installing packages"
     for t in "${TOOLS[@]}"; do ensure_tool "$t" || true; done
 
+    # The fortune binary can exist without any quote database ("No fortunes found"):
+    # apt's --no-install-recommends skips 'fortunes-min'/'fortunes'. Verify and fix.
+    if have fortune && ! fortune >/dev/null 2>&1; then
+        case "$PM" in
+            apt)            fdb="fortunes-min fortunes" ;;
+            dnf|yum|pacman) fdb="fortune-mod" ;;
+            zypper|apk)     fdb="fortune" ;;
+            *)              fdb="" ;;
+        esac
+        for p in $fdb; do pm_install "$p" || true; done
+        if fortune >/dev/null 2>&1; then ok "fortune quote database installed"
+        else warn "fortune has no quote database - install your distro's fortunes package manually."; fi
+    fi
+
     # Debian/Ubuntu name the bat binary "batcat" - provide a real `bat` command too
     if ! have bat && have batcat; then
         "${SUDO[@]}" ln -sfn "$(command -v batcat)" /usr/local/bin/bat && ok "bat -> batcat symlink in /usr/local/bin"

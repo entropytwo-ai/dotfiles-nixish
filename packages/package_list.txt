@@ -5,7 +5,7 @@
 eza          | eza  (or deb.gierens.de / GitHub binary fallback)   | eza (GitHub binary fallback) | eza | eza | eza
 duf          | duf                        | duf                | duf           | duf               | duf
 cowsay       | cowsay                     | cowsay             | cowsay        | cowsay            | cowsay
-fortune      | fortune-mod                | fortune-mod        | fortune-mod   | fortune           | fortune
+fortune      | fortune-mod + fortunes-min + fortunes | fortune-mod        | fortune-mod   | fortune           | fortune
 fastfetch    | fastfetch (GitHub .deb fallback) | fastfetch (GitHub .rpm fallback) | fastfetch | fastfetch | fastfetch
 tldr         | tldr / tealdeer            | tldr / tealdeer    | tealdeer/tldr | tealdeer / tldr   | tealdeer
 nmap         | nmap                       | nmap               | nmap          | nmap              | nmap
