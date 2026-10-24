@@ -16,6 +16,10 @@ glances      | glances                    | glances            | glances       |
 curl         | curl                       | curl               | curl          | curl              | curl
 bat          | bat (binary: batcat)       | bat                | bat           | bat               | bat
 
+# NixOS (nix-env -iA / nix profile install nixpkgs#...): same names as the first
+# column, except fortune -> fortune, tldr -> tldr (fallback tealdeer),
+# gpg -> gnupg, tar -> gnutar, lsb -> lsb-release. See nix/packages.nix.
+
 # prerequisites / helpers
 git wget gpg (gnupg) ca-certificates lsb-release acl (getfacl for xtree -A) tar
 zsh is NOT installed automatically - if it is present, ~/.zshrc gets configured too.

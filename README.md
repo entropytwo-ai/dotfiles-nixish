@@ -2,10 +2,11 @@
 
 ![bash](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
 ![zsh](https://img.shields.io/badge/bonus-zsh-F15A24?logo=zsh&logoColor=white)
-![distros](https://img.shields.io/badge/distros-Debian%20%7C%20Ubuntu%20%7C%20Fedora%20%7C%20RHEL%20%7C%20Arch%20%7C%20openSUSE%20%7C%20Alpine-blue)
+![distros](https://img.shields.io/badge/distros-Debian%20%7C%20Ubuntu%20%7C%20Fedora%20%7C%20RHEL%20%7C%20Arch%20%7C%20openSUSE%20%7C%20Alpine%20%7C%20NixOS-blue)
+![nixos](https://img.shields.io/badge/NixOS-flakes%20%26%20no%20flakes-5277C3?logo=nixos&logoColor=white)
 ![idempotent](https://img.shields.io/badge/re--run-safe-success)
 
-> Set up a fresh Linux box the way I like it, with **one command**. No Nix needed.
+> Set up a fresh Linux box the way I like it, with **one command**. Works on regular distros *and* NixOS (with or without flakes).
 
 ## 🚀 One-liner install
 
@@ -47,6 +48,65 @@ Packages that fail to install only produce a warning. The installer keeps going.
 - **`~/.zshrc`** (only if zsh is installed): the same settings in zsh syntax (`setopt APPEND_HISTORY`, `SAVEHIST`, and so on)
 - Before an rc file is changed, a backup is saved as `*.dotfiles-nixish.bak.<timestamp>`.
 
+## ❄️ NixOS (with or without flakes)
+
+The same one-liner works on NixOS. NixOS already ships `curl`; the installer adds `git` itself. Packages go into **your user profile**, so no `nixos-rebuild` is needed. The installer picks the method automatically:
+
+| Your setup | What the installer runs |
+|---|---|
+| Channels, no flakes (the default NixOS install) | `nix-env -f '<nixpkgs>' -iA eza duf ...` |
+| Flakes (no `<nixpkgs>` channel, or your profile is already a `nix profile` one) | `nix profile install nixpkgs#eza nixpkgs#duf ...` (with `--extra-experimental-features 'nix-command flakes'`, so you don't need flakes turned on in `nix.conf`) |
+
+To choose the method yourself, add `--no-flakes` or `--flakes` to the one-liner. `xtree` still goes to `/usr/local/bin/xtree` with the `~/xtree` link, and the `~/.bashrc` / `~/.zshrc` block is the same as on other distros. On NixOS the installer doesn't change the system: no channel updates and no locale generation. `en_US.UTF-8` is the NixOS default locale. If you've removed it, add `i18n.supportedLocales = [ "en_US.UTF-8/UTF-8" ];` to your configuration.
+
+### Declarative option (configuration.nix)
+
+If you'd rather manage the tools through your NixOS configuration, the repo includes a NixOS module. Enabling it installs all the tools plus `xtree` system-wide.
+
+**Without flakes**: in `/etc/nixos/configuration.nix`:
+
+```nix
+{
+  imports = [
+    "${builtins.fetchTarball "https://github.com/entropytwo-ai/dotfiles-nixish/archive/main.tar.gz"}/nix/module.nix"
+  ];
+  programs.dotfiles-nixish.enable = true;
+  # programs.dotfiles-nixish.shellConfig = true;  # also apply the bash/zsh block system-wide
+}
+```
+
+**With flakes**: in `/etc/nixos/flake.nix`:
+
+```nix
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.dotfiles-nixish.url = "github:entropytwo-ai/dotfiles-nixish";
+  inputs.dotfiles-nixish.inputs.nixpkgs.follows = "nixpkgs";
+
+  outputs = { nixpkgs, dotfiles-nixish, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+        dotfiles-nixish.nixosModules.default
+        { programs.dotfiles-nixish.enable = true; }
+      ];
+    };
+  };
+}
+```
+
+Then run `sudo nixos-rebuild switch`. After that, either run the one-liner with `--no-packages`, which only adds the shell block and the `/usr/local/bin/xtree` link, or set `shellConfig = true` and skip the installer entirely. Don't do both, or the greeting will show twice.
+
+**Just the tools, no config**:
+
+```bash
+nix-env -if https://github.com/entropytwo-ai/dotfiles-nixish/archive/main.tar.gz   # no flakes
+nix profile install github:entropytwo-ai/dotfiles-nixish                           # flakes
+```
+
+> 💡 For zsh as your login shell on NixOS, use `programs.zsh.enable = true;` and `users.users.<you>.shell = pkgs.zsh;`. A zsh installed into your user profile isn't listed in `/etc/shells`, so it can't be set as your login shell.
+
 ## 🔄 Updating
 
 ```bash
@@ -72,4 +132,9 @@ scripts/xtree.sh           # xtree
 config/bashrc_append.sh    # ~/.bashrc block
 config/zshrc_append.sh     # ~/.zshrc block
 packages/package_list.txt  # package names for each distro
+flake.nix / flake.lock     # flake: nixosModules.default + packages (default, xtree)
+default.nix                # non-flake entry point (nix-env -if / nix-shell)
+nix/module.nix             # NixOS module (programs.dotfiles-nixish.*)
+nix/packages.nix           # tool list as nixpkgs attributes
+nix/xtree.nix              # xtree as a Nix package
 ```

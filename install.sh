@@ -6,15 +6,18 @@
 #    bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh)
 #
 #  Supports apt (Debian/Ubuntu/Mint/Pop), dnf/yum (Fedora/RHEL/Rocky/Alma),
-#  pacman (Arch/Manjaro/Endeavour), zypper (openSUSE) and apk (Alpine).
+#  pacman (Arch/Manjaro/Endeavour), zypper (openSUSE), apk (Alpine) and
+#  NixOS (with or without flakes: nix-env + channels, or nix profile).
 #  Safe to re-run: packages already present are skipped, the shell config block
 #  is replaced in place, and the xtree binary/symlink are refreshed.
 #
 #  Options:
 #    --zsh            also install zsh (then ~/.zshrc gets configured too)
 #    --no-packages    skip package installation (config + xtree only)
+#    --flakes         NixOS: force `nix profile install nixpkgs#...`
+#    --no-flakes      NixOS: force `nix-env -iA` with channels
 #    -h, --help       show help
-#  Env overrides: DOTFILES_REPO, DOTFILES_BRANCH, DOTFILES_DIR
+#  Env overrides: DOTFILES_REPO, DOTFILES_BRANCH, DOTFILES_DIR, DOTFILES_PM
 # =============================================================================
 set -uo pipefail
 
@@ -28,11 +31,14 @@ TS="$(date +%Y%m%d-%H%M%S)"
 
 OPT_ZSH=false
 OPT_PACKAGES=true
+NIX_MODE=""        # "env" (channels, no flakes) or "profile" (flakes); auto-detected if empty
 for arg in "$@"; do
     case "$arg" in
         --zsh) OPT_ZSH=true ;;
         --no-packages) OPT_PACKAGES=false ;;
-        -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'
+        --flakes) NIX_MODE=profile ;;
+        --no-flakes) NIX_MODE="env" ;;
+        -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'
                    echo "See https://github.com/entropytwo-ai/dotfiles-nixish"; exit 0 ;;
         *) echo "Unknown option: $arg (try --help)" >&2; exit 2 ;;
     esac
@@ -82,7 +88,7 @@ TARGET_HOME="$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)"
 TARGET_GROUP="$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")"
 
 as_target() {   # run a command as the target user
-    if [[ "$(id -un)" == "$TARGET_USER" ]]; then "$@"; else sudo -u "$TARGET_USER" -H "$@"; fi
+    if [[ "$(id -un)" == "$TARGET_USER" ]]; then "$@"; else sudo -u "$TARGET_USER" -H env "PATH=$PATH" "$@"; fi
 }
 fix_owner() {   # give files back to the target user if we're root on their behalf
     [[ $EUID -eq 0 && "$TARGET_USER" != "root" ]] && chown -h "$TARGET_USER:$TARGET_GROUP" "$@" 2>/dev/null
@@ -97,7 +103,12 @@ if [[ -r /etc/os-release ]]; then
     OS_ID="${ID:-unknown}"; OS_LIKE="${ID_LIKE:-}"; OS_VER="${VERSION_ID:-}"; OS_NAME="${PRETTY_NAME:-$OS_ID}"
 fi
 
-if   have apt-get; then PM=apt
+IS_NIXOS=false
+[[ "$OS_ID" == "nixos" || -e /etc/NIXOS ]] && IS_NIXOS=true
+
+if   [[ -n "${DOTFILES_PM:-}" ]]; then PM="$DOTFILES_PM"
+elif $IS_NIXOS && have nix-env; then PM=nix
+elif have apt-get; then PM=apt
 elif have dnf;     then PM=dnf
 elif have yum;     then PM=yum
 elif have pacman;  then PM=pacman
@@ -107,7 +118,30 @@ else PM=none
 fi
 
 ARCH="$(uname -m)"
-step "Detected: ${OS_NAME} (${ARCH}) - package manager: ${PM} - user: ${TARGET_USER}"
+
+# ---------------------------------------------------------------- Nix / NixOS
+# Without flakes: nix-env -iA against the <nixpkgs> channel.
+# With flakes:    nix profile install nixpkgs#<pkg>  (used automatically when no
+#                 channel exists, or when the user profile is already a
+#                 `nix profile` one - nix-env refuses to touch those).
+NIX_FLAGS=(--extra-experimental-features "nix-command flakes")
+if [[ "$PM" == "nix" ]]; then
+    # user-profile bins (classic, XDG and NixOS per-user locations)
+    PATH="$TARGET_HOME/.nix-profile/bin:$TARGET_HOME/.local/state/nix/profile/bin:/etc/profiles/per-user/$TARGET_USER/bin:/run/current-system/sw/bin:$PATH"
+    if [[ -z "$NIX_MODE" ]]; then
+        if [[ -e "$TARGET_HOME/.nix-profile/manifest.json" || -e "$TARGET_HOME/.local/state/nix/profile/manifest.json" ]]; then
+            NIX_MODE=profile
+        elif as_target nix-instantiate --eval -E '<nixpkgs>' >/dev/null 2>&1; then
+            NIX_MODE="env"
+        else
+            NIX_MODE=profile
+        fi
+    fi
+    [[ "$NIX_MODE" == "profile" ]] && ! have nix && die "Flakes mode needs the 'nix' command, which was not found."
+fi
+nix_mode_label() { [[ "$NIX_MODE" == "env" ]] && echo "nix-env + channels (no flakes)" || echo "nix profile + flakes"; }
+
+step "Detected: ${OS_NAME} (${ARCH}) - package manager: ${PM}$([[ "$PM" == nix ]] && echo " [$(nix_mode_label)]") - user: ${TARGET_USER}"
 
 # ---------------------------------------------------------------- package manager wrappers
 REFRESHED=false
@@ -122,6 +156,7 @@ pm_refresh() {
         pacman) "${SUDO[@]}" pacman -Syu --noconfirm ;;   # Arch: never partial-upgrade
         zypper) "${SUDO[@]}" zypper --non-interactive --quiet refresh ;;
         apk)    "${SUDO[@]}" apk update -q ;;
+        nix)    true ;;   # never auto-update channels / flake registry behind your back
     esac >/dev/null 2>&1 || warn "Package metadata refresh reported errors (continuing)."
 }
 
@@ -134,14 +169,48 @@ pm_install() {  # pm_install pkg... ; returns non-zero on failure, never aborts
         pacman) "${SUDO[@]}" pacman -S --noconfirm --needed "$@" ;;
         zypper) "${SUDO[@]}" zypper --non-interactive --quiet install --no-recommends "$@" ;;
         apk)    "${SUDO[@]}" apk add -q "$@" ;;
+        nix)    nix_install "$@" ;;
         *)      return 1 ;;
     esac >/dev/null 2>&1
+}
+
+# Nix installs go into the *target user's* profile (no sudo needed)
+nix_install() {
+    local a refs=()
+    if [[ "$NIX_MODE" == "env" ]]; then
+        as_target nix-env -f '<nixpkgs>' -iA "$@" && return 0
+        for a in "$@"; do refs+=("nixos.$a"); done      # root channel named "nixos"
+        as_target nix-env -iA "${refs[@]}"
+    else
+        for a in "$@"; do refs+=("nixpkgs#$a"); done
+        as_target nix "${NIX_FLAGS[@]}" profile install "${refs[@]}"
+    fi
+}
+
+# Nix evaluates nixpkgs once per call, so install everything missing in one go
+nix_batch() {  # nix_batch <logical-tool>...
+    [[ "$PM" == "nix" ]] || return 0
+    local t p miss=()
+    for t in "$@"; do
+        tool_present "$t" && continue
+        p="$(candidates "$t" | awk '{print $1}')"; [[ -n "$p" ]] && miss+=("$p")
+    done
+    [[ ${#miss[@]} -gt 0 ]] || return 0
+    info "Installing via $(nix_mode_label): ${miss[*]}"
+    info "(first run downloads from the Nix binary cache - this can take a few minutes)"
+    pm_install "${miss[@]}" || info "Batch install failed - retrying one package at a time..."
 }
 
 # Package candidates per logical tool (first one that installs wins)
 candidates() {
     local tool="$1"
     case "$PM:$tool" in
+        nix:gpg)         echo "gnupg" ;;
+        nix:certs)       echo "cacert" ;;
+        nix:lsb)         echo "lsb-release" ;;
+        nix:tar)         echo "gnutar" ;;
+        nix:fortune)     echo "fortune" ;;
+        nix:tldr)        echo "tldr tealdeer" ;;
         *:git|*:curl|*:wget|*:tar|*:acl|*:nmap|*:ncdu|*:btop|*:fzf|*:glances|*:duf|*:cowsay|*:eza|*:fastfetch|*:bat|*:zsh)
                          echo "$tool" ;;
         apt:gpg)         echo "gnupg" ;;
@@ -207,6 +276,7 @@ is_musl() { ldd --version 2>&1 | grep -qi musl || [[ -e /lib/ld-musl-x86_64.so.1
 
 # ---------------------------------------------------------------- eza fallbacks
 fallback_eza() {
+    [[ "$PM" == "nix" ]] && return 1   # foreign binaries don't belong on NixOS
     if [[ "$PM" == "apt" ]]; then
         info "eza not in your apt repos - adding the official eza repo (deb.gierens.de)..."
         ensure_tool gpg >/dev/null; ensure_tool wget >/dev/null
@@ -237,6 +307,7 @@ fallback_eza() {
 
 # ---------------------------------------------------------------- fastfetch fallbacks
 fallback_fastfetch() {
+    [[ "$PM" == "nix" ]] && return 1
     local a=""
     case "$ARCH" in
         x86_64) a="amd64" ;; aarch64|arm64) a="aarch64" ;; armv7l) a="armv7l" ;;
@@ -298,6 +369,7 @@ if $OPT_PACKAGES; then
     if [[ "$PM" != "none" ]]; then
         step "Installing prerequisites"
         enable_epel
+        nix_batch certs curl wget git tar gpg acl lsb
         for t in certs curl wget git tar gpg acl lsb; do ensure_tool "$t" || true; done
     fi
 fi
@@ -342,6 +414,7 @@ $OPT_ZSH && TOOLS+=(zsh)
 
 if $OPT_PACKAGES && [[ "$PM" != "none" ]]; then
     step "Installing packages"
+    nix_batch "${TOOLS[@]}"
     for t in "${TOOLS[@]}"; do ensure_tool "$t" || true; done
 
     # The fortune binary can exist without any quote database ("No fortunes found"):
@@ -384,6 +457,8 @@ if $OPT_PACKAGES && ! locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then
         pacman) "${SUDO[@]}" sed -i 's/^#\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen && "${SUDO[@]}" locale-gen >/dev/null 2>&1 ;;
         dnf|yum) pm_install glibc-langpack-en || pm_install glibc-locale-source ;;
         zypper) pm_install glibc-locale ;;
+        nix)    info "NixOS locales are declarative - add to /etc/nixos/configuration.nix:"
+                info '  i18n.supportedLocales = [ "en_US.UTF-8/UTF-8" ];  # then: sudo nixos-rebuild switch' ;;
     esac
     if locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then ok "en_US.UTF-8 available"
     else warn "en_US.UTF-8 locale not available - LC_TIME may fall back to C."; fi

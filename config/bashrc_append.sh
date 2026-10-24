@@ -41,7 +41,7 @@ fi
 alias cowsays='{ [ -d /etc/update-motd.d ] && run-parts /etc/update-motd.d/; }; fastfetch --logo <(fortune | cowsay -W 30) --logo-color-1 cyan --logo-color-2 yellow'
 
 # xtree
-alias xtree='/usr/local/bin/xtree'
+[ -x /usr/local/bin/xtree ] && alias xtree='/usr/local/bin/xtree'   # else xtree comes from PATH (e.g. the NixOS module)
 
 # --- Greeting (interactive shells only) -----------------------------------------
 if [[ $- == *i* ]] && command -v fastfetch >/dev/null 2>&1; then
