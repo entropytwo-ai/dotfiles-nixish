@@ -510,11 +510,28 @@ install_block() {  # install_block <rcfile> <snippet>
 step "Configuring shells"
 install_block "$TARGET_HOME/.bashrc" "$SRC_DIR/config/bashrc_append.sh"
 
-# Login shells that have ~/.bash_profile but never read ~/.bashrc
-BP="$TARGET_HOME/.bash_profile"
-if [[ -f "$BP" ]] && ! grep -q 'bashrc' "$BP"; then
-    printf '\n# dotfiles-nixish: load ~/.bashrc in login shells\n[ -f ~/.bashrc ] && . ~/.bashrc\n' >> "$BP"
-    ok "$BP now sources ~/.bashrc"
+# Login shells (console, SSH) read only the FIRST of ~/.bash_profile,
+# ~/.bash_login, ~/.profile - never ~/.bashrc. Ubuntu's skel ~/.profile sources
+# ~/.bashrc, but NixOS (no /etc/skel) and minimal installs start with an empty
+# home, so without this the whole block is ignored in login shells.
+LOGIN_RC=""
+for f in .bash_profile .bash_login .profile; do
+    [[ -f "$TARGET_HOME/$f" ]] && { LOGIN_RC="$TARGET_HOME/$f"; break; }
+done
+if [[ -z "$LOGIN_RC" ]]; then
+    LOGIN_RC="$TARGET_HOME/.bash_profile"
+    # shellcheck disable=SC2016
+    printf '# Created by dotfiles-nixish: login shells (console/SSH) should load ~/.bashrc\n[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"\n' > "$LOGIN_RC"
+    fix_owner "$LOGIN_RC"
+    ok "$LOGIN_RC created (login shells now load ~/.bashrc)"
+elif ! grep -qE '(\.|source)[[:space:]]+.*\.bashrc' "$LOGIN_RC"; then
+    # ~/.profile is also read by sh/dash/ash, so only source bashrc from bash
+    # shellcheck disable=SC2016
+    printf '\n# dotfiles-nixish: load ~/.bashrc in bash login shells\nif [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi\n' >> "$LOGIN_RC"
+    fix_owner "$LOGIN_RC"
+    ok "$LOGIN_RC now sources ~/.bashrc"
+else
+    ok "$LOGIN_RC already sources ~/.bashrc"
 fi
 
 ZSH_DONE=false

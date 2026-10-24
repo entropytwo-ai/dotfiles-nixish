@@ -6,6 +6,10 @@
 # --- PATH: Debian/Ubuntu ship cowsay/fortune in /usr/games -------------------
 [[ -d /usr/games && ":$PATH:" != *:/usr/games:* ]] && PATH="$PATH:/usr/games"
 [[ ":$PATH:" != *:/usr/local/bin:* ]] && PATH="/usr/local/bin:$PATH"
+# Nix user profiles (NixOS / Nix on other distros) - where eza etc. live there
+for _d in "$HOME/.nix-profile/bin" "$HOME/.local/state/nix/profile/bin" "/etc/profiles/per-user/$USER/bin"; do
+    [[ ":$PATH:" != *":$_d:"* && -d "$_d" ]] && PATH="$_d:$PATH"
+done; unset _d
 export PATH
 
 # --- History (zsh equivalents of the bash settings) -----------------------------

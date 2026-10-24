@@ -6,6 +6,10 @@
 # --- PATH: Debian/Ubuntu ship cowsay/fortune in /usr/games -------------------
 case ":$PATH:" in *:/usr/games:*) ;; *) [ -d /usr/games ] && PATH="$PATH:/usr/games" ;; esac
 case ":$PATH:" in *:/usr/local/bin:*) ;; *) PATH="/usr/local/bin:$PATH" ;; esac
+# Nix user profiles (NixOS / Nix on other distros) - where eza etc. live there
+for _d in "$HOME/.nix-profile/bin" "$HOME/.local/state/nix/profile/bin" "/etc/profiles/per-user/$USER/bin"; do
+    case ":$PATH:" in *":$_d:"*) ;; *) [ -d "$_d" ] && PATH="$_d:$PATH" ;; esac
+done; unset _d
 export PATH
 
 # --- History ------------------------------------------------------------------
