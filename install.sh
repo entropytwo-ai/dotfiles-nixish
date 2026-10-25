@@ -513,11 +513,53 @@ fi
 # top-level (column 0) one-line statements are touched - nothing inside if/case
 # blocks - and the result must still pass `bash -n`/`zsh -n`, otherwise nothing
 # is removed. The full original is kept in the timestamped .bak file.
+# --- progress output helpers for dotfile edits
+disp()  { local p="$1"; [[ "$p" == "$TARGET_HOME"/* ]] && p="~${p#"$TARGET_HOME"}"; printf '%s' "$p"; }
+sub()   { printf '   %s→%s %s\n' "$C_C" "$C_0" "$*"; }
+short() { local s="$1" n="${2:-46}"; (( ${#s} > n )) && s="${s:0:n-1}…"; printf '%s' "$s"; }
+ltrim() { local s="$1"; printf '%s' "${s#"${s%%[![:space:]]*}"}"; }
+
+# regex that matches any definition of the same setting as rc line $1
+setting_re() {
+    local l k; l="$(ltrim "$1")"
+    case "$l" in
+        alias[[:space:]]*)
+            k="$(ltrim "${l#alias}")"; k="${k%%=*}"
+            printf '^[[:space:]]*alias[[:space:]]+%s=' "$k" ;;
+        shopt[[:space:]]*|setopt[[:space:]]*)
+            k="$(awk '{print $NF}' <<<"${l%%#*}")"
+            printf '^[[:space:]]*(shopt[[:space:]]+-[su]|setopt)[[:space:]]+%s([[:space:]]|$)' "$k" ;;
+        *)
+            [[ "$l" == export[[:space:]]* ]] && l="$(ltrim "${l#export}")"
+            k="${l%%=*}"
+            printf '^[[:space:]]*(export[[:space:]]+)?%s=' "$k" ;;
+    esac
+}
+
+# describe what the managed block sets for the same setting as rc line $1
+block_value() {
+    local line snippet="$2" re; local -a defs
+    line="$(ltrim "$1")"; re="$(setting_re "$line")"
+    mapfile -t defs < <(grep -E "$re" "$snippet" | sed -E 's/^[[:space:]]*//; s/[[:space:]]+#[[:space:]].*$//' | awk '!seen[$0]++')
+    if (( ${#defs[@]} == 0 )); then printf 'set in the block'
+    elif (( ${#defs[@]} == 1 )) && [[ "${defs[0]}" == "$line" ]]; then printf 'identical line is in the block'
+    else
+        printf 'block: %s' "$(short "${defs[0]}")"
+        (( ${#defs[@]} > 1 )) && printf ' (+%d fallback%s)' $(( ${#defs[@]} - 1 )) "$( (( ${#defs[@]} > 2 )) && echo s)"
+    fi
+    return 0
+}
+
 dedupe_rc() {  # dedupe_rc <rcfile> <snippet> <file-to-filter-in-place>
-    local rc="$1" snippet="$2" f="$3" vars aliases opts pat removed shell_chk
+    local rc="$1" snippet="$2" f="$3" vars aliases opts kvars pat ipat kpat shell_chk
+    local hits indented kept ln line why n
+    DEDUP_COUNT=0
     # PATH is built up incrementally and HISTFILE's default must not clobber a user value
     vars=$(grep -oE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "$snippet" \
-           | sed -E 's/^[[:space:]]*(export[[:space:]]+)?//; s/=$//' | grep -vxE 'PATH|HISTFILE' | sort -u | paste -sd'|' -)
+           | sed -E 's/^[[:space:]]*(export[[:space:]]+)?//; s/=$//' | sort -u)
+    # the block always extends PATH (inside case/&& lines the scan above can't see)
+    kvars=$(printf 'PATH\n%s\n' "$(grep -xE 'HISTFILE' <<<"$vars")" | grep . | paste -sd'|' -)
+    vars=$(grep -vxE 'PATH|HISTFILE' <<<"$vars" | paste -sd'|' -)
     aliases=$(grep -oE '^[[:space:]]*alias[[:space:]]+[A-Za-z0-9_.-]+=' "$snippet" \
            | sed -E 's/^[[:space:]]*alias[[:space:]]+//; s/=$//' | sort -u | paste -sd'|' -)
     opts=$(grep -oE '^[[:space:]]*(shopt[[:space:]]+-[su]|setopt)[[:space:]]+[A-Za-z_]+' "$snippet" \
@@ -528,30 +570,71 @@ dedupe_rc() {  # dedupe_rc <rcfile> <snippet> <file-to-filter-in-place>
     [[ -n "$opts" ]]    && pat+="(shopt[[:space:]]+-[su]|setopt)[[:space:]]+($opts)([[:space:]]*(#.*)?)$|"
     pat="${pat%|})"
     [[ "$pat" == '^()' ]] && return 0
+    ipat="^[[:space:]]+${pat#^}"                                   # same, but indented
+    kpat=""; [[ -n "$kvars" ]] && kpat="^[[:space:]]*(export[[:space:]]+)?($kvars)="
 
-    awk -v p="$pat" '$0 ~ p && $0 !~ /\\$/ {next} {print}' "$f" > "$f.dd"
-    removed=$(awk -v p="$pat" '$0 ~ p && $0 !~ /\\$/' "$f")
-    [[ -z "$removed" ]] && { rm -f "$f.dd"; return 0; }
+    sub "Scanning $(disp "$rc") for older options that the dotfiles-nixish block sets again..."
+    # matches OUTSIDE our block, reported with their line numbers in the real file
+    outside() { awk -v b="$MARK_BEGIN" -v e="$MARK_END" -v p="$1" \
+        '$0==b{s=1;next} $0==e{s=0;next} !s && $0 ~ p && $0 !~ /\\$/ {print NR "\t" $0}' "$rc"; }
+    hits=$(outside "$pat"); indented=$(outside "$ipat"); kept=""; [[ -n "$kpat" ]] && kept=$(outside "$kpat")
 
-    case "$rc" in *zshrc*) shell_chk=zsh ;; *) shell_chk=bash ;; esac
-    if have "$shell_chk" && ! "$shell_chk" -n "$f.dd" 2>/dev/null; then
-        warn "$rc: could not safely remove settings duplicated by the dotfiles-nixish block - left as-is."
-        rm -f "$f.dd"; return 0
+    if [[ -z "$hits" ]]; then
+        sub "No older duplicate options found"
+    else
+        n=$(grep -c '' <<<"$hits")
+        sub "Found $n older duplicate option(s) (each setting should exist only once):"
+        while IFS=$'\t' read -r ln line; do
+            printf '       %s-%s line %-4s %-34s %s→ %s%s\n' "$C_Y" "$C_0" "$ln:" "$(short "$line" 34)" "$C_C" "$(block_value "$line" "$snippet")" "$C_0"
+        done <<<"$hits"
     fi
-    mv "$f.dd" "$f"
-    info "Removed from $rc (now set once, in the dotfiles-nixish block):"
-    printf '%s\n' "$removed" | sed 's/^/        - /'
+    if [[ -n "$indented" ]]; then
+        while IFS=$'\t' read -r ln line; do
+            printf '       %s·%s line %-4s %-34s %s(left alone: inside an if/case block)%s\n' "$C_C" "$C_0" "$ln:" "$(short "$(ltrim "$line")" 34)" "$C_C" "$C_0"
+        done <<<"$indented"
+    fi
+    if [[ -n "$kept" ]]; then
+        while IFS=$'\t' read -r ln line; do
+            case "$(ltrim "$line")" in
+                *HISTFILE=*) why="kept: the block uses your HISTFILE" ;;
+                *)           why="kept: the block only adds to PATH" ;;
+            esac
+            printf '       %s=%s line %-4s %-34s %s(%s)%s\n' "$C_G" "$C_0" "$ln:" "$(short "$(ltrim "$line")" 34)" "$C_C" "$why" "$C_0"
+        done <<<"$kept"
+    fi
+    if [[ -n "$hits" ]]; then
+        awk -v p="$pat" '$0 ~ p && $0 !~ /\\$/ {next} {print}' "$f" > "$f.dd"
+        case "$rc" in *zshrc*) shell_chk=zsh ;; *) shell_chk=bash ;; esac
+        if have "$shell_chk" && ! "$shell_chk" -n "$f.dd" 2>/dev/null; then
+            rm -f "$f.dd"
+            warn "$(disp "$rc"): removing those lines would break the file's syntax ($shell_chk -n) - kept them all."
+        else
+            mv "$f.dd" "$f"; DEDUP_COUNT=$n
+            if have "$shell_chk"; then sub "Removed $n duplicate line(s); syntax check ($shell_chk -n) passed"
+            else sub "Removed $n duplicate line(s)"; fi
+        fi
+    fi
+    return 0
 }
 
 install_block() {  # install_block <rcfile> <snippet>
-    local rc="$1" snippet="$2" tmp nb ne
+    local rc="$1" snippet="$2" tmp nb ne d bak
+    d="$(disp "$rc")"
+    printf '\n   %s%s%s\n' "$C_B" "$d" "$C_0"
     [[ -f "$snippet" ]] || { warn "Snippet $snippet missing"; return 1; }
-    if [[ ! -e "$rc" ]]; then touch "$rc" && fix_owner "$rc"; fi
+    if [[ ! -e "$rc" ]]; then
+        sub "$d does not exist yet - creating it"
+        touch "$rc" && fix_owner "$rc"
+    else
+        sub "Reading $d ($(grep -c '' "$rc") lines)"
+    fi
     nb=$(grep -cxF "$MARK_BEGIN" "$rc" || true); ne=$(grep -cxF "$MARK_END" "$rc" || true)
     if [[ "$nb" != "$ne" ]]; then
-        warn "$rc has unbalanced dotfiles-nixish markers - fix it manually; not modified."
+        warn "$d has unbalanced dotfiles-nixish markers - fix it manually; not modified."
         return 1
     fi
+    if [[ "$nb" -gt 0 ]]; then sub "Found the existing dotfiles-nixish block - it will be refreshed in place"
+    else sub "No dotfiles-nixish block yet - it will be added at the end"; fi
     tmp="$WORKDIR/rc.$$"
     awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
         $0==b {skip=1; next}  $0==e {skip=0; next}  !skip {print}' "$rc" > "$tmp.base"
@@ -560,15 +643,19 @@ install_block() {  # install_block <rcfile> <snippet>
     sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp.base" > "$tmp"
     { [[ -s "$tmp" ]] && echo; cat "$snippet"; } >> "$tmp"
     if cmp -s "$tmp" "$rc"; then
-        ok "$rc already up to date"
+        ok "$d already up to date - no changes written"
     else
-        [[ -s "$rc" ]] && cp -p "$rc" "$rc.dotfiles-nixish.bak.$TS" && fix_owner "$rc.dotfiles-nixish.bak.$TS"
+        if [[ -s "$rc" ]]; then
+            bak="$rc.dotfiles-nixish.bak.$TS"
+            cp -p "$rc" "$bak" && fix_owner "$bak" && sub "Backup of the original saved: $(disp "$bak")"
+        fi
+        sub "Writing dotfiles-nixish block ($(grep -c '' "$snippet") lines) to $d"
         cat "$tmp" > "$rc"   # keep inode/permissions
-        if [[ "$nb" -gt 0 ]]; then ok "$rc updated (previous block replaced)"; else ok "$rc configured"; fi
+        ok "$d $([[ "$nb" -gt 0 ]] && echo updated || echo configured)$( (( DEDUP_COUNT > 0 )) && echo " - $DEDUP_COUNT duplicate option(s) removed")"
     fi
 }
 
-step "Configuring shells"
+step "Editing shell dotfiles"
 install_block "$TARGET_HOME/.bashrc" "$SRC_DIR/config/bashrc_append.sh"
 
 # Login shells (console, SSH) read only the FIRST of ~/.bash_profile,
@@ -579,27 +666,33 @@ LOGIN_RC=""
 for f in .bash_profile .bash_login .profile; do
     [[ -f "$TARGET_HOME/$f" ]] && { LOGIN_RC="$TARGET_HOME/$f"; break; }
 done
+printf '\n   %sLogin shell file%s\n' "$C_B" "$C_0"
+sub "Checking that console/SSH logins load ~/.bashrc..."
 if [[ -z "$LOGIN_RC" ]]; then
     LOGIN_RC="$TARGET_HOME/.bash_profile"
+    sub "No ~/.bash_profile, ~/.bash_login or ~/.profile found - creating $(disp "$LOGIN_RC")"
     # shellcheck disable=SC2016
     printf '# Created by dotfiles-nixish: login shells (console/SSH) should load ~/.bashrc\n[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"\n' > "$LOGIN_RC"
     fix_owner "$LOGIN_RC"
-    ok "$LOGIN_RC created (login shells now load ~/.bashrc)"
+    ok "$(disp "$LOGIN_RC") created (login shells now load ~/.bashrc)"
 elif ! grep -qE '(\.|source)[[:space:]]+.*\.bashrc' "$LOGIN_RC"; then
+    sub "$(disp "$LOGIN_RC") does not load ~/.bashrc - appending 2 lines"
+    cp -p "$LOGIN_RC" "$LOGIN_RC.dotfiles-nixish.bak.$TS" && fix_owner "$LOGIN_RC.dotfiles-nixish.bak.$TS" \
+        && sub "Backup of the original saved: $(disp "$LOGIN_RC.dotfiles-nixish.bak.$TS")"
     # ~/.profile is also read by sh/dash/ash, so only source bashrc from bash
     # shellcheck disable=SC2016
     printf '\n# dotfiles-nixish: load ~/.bashrc in bash login shells\nif [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi\n' >> "$LOGIN_RC"
     fix_owner "$LOGIN_RC"
-    ok "$LOGIN_RC now sources ~/.bashrc"
+    ok "$(disp "$LOGIN_RC") now loads ~/.bashrc"
 else
-    ok "$LOGIN_RC already sources ~/.bashrc"
+    ok "$(disp "$LOGIN_RC") already loads ~/.bashrc - no changes written"
 fi
 
 ZSH_DONE=false
 if have zsh; then
     install_block "$TARGET_HOME/.zshrc" "$SRC_DIR/config/zshrc_append.sh" && ZSH_DONE=true
 else
-    info "zsh not installed - skipping ~/.zshrc (re-run with --zsh to install it)."
+    printf '\n'; info "zsh not installed - skipping ~/.zshrc (re-run with --zsh to install it)."
 fi
 
 # =============================================================================
