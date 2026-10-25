@@ -13,10 +13,11 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh)
 ```
 
-In a terminal it first shows a menu - type numbers to toggle, Enter to start:
+In a terminal it first shows a menu with nothing selected - type numbers
+to toggle (e.g. `1` for the dotfiles), Enter to start:
 
 ```
-   1) [x] Dotfiles: tools, shell config, xtree
+   1) [ ] Dotfiles: tools, shell config, xtree
    2) [ ] Create a user with sudo access
    3) [ ] Enable SSH access for non-root users
    4) [ ] Change hostname          now: web-01

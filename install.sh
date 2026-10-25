@@ -313,7 +313,8 @@ SHOW_MENU=false
 if $TTY_OK && { [[ "$OPT_MENU" == yes ]] || ! $SYS_FLAGS; }; then SHOW_MENU=true; fi
 
 if $SHOW_MENU; then
-    M=("$OPT_DOTFILES" "$([[ -n "$NEW_USER" ]] && echo true || echo false)" "$DO_SSH" "$([[ -n "$NEW_HOSTNAME" ]] && echo true || echo false)" \
+    # nothing is pre-selected; only items given as flags start ticked
+    M=(false "$([[ -n "$NEW_USER" ]] && echo true || echo false)" "$DO_SSH" "$([[ -n "$NEW_HOSTNAME" ]] && echo true || echo false)" \
        "$([[ -n "$NET_IP$NET_MASK$NET_GW" ]] && echo true || echo false)" "$([[ -n "$NET_DNS" ]] && echo true || echo false)")
     ci="$(cur_iface)"
     while true; do
