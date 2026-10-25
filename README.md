@@ -13,6 +13,20 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh)
 ```
 
+In a terminal it first shows a menu - type numbers to toggle, Enter to start:
+
+```
+   1) [x] Dotfiles: tools, shell config, xtree
+   2) [ ] Create a user with sudo access
+   3) [ ] Enable SSH access for non-root users
+   4) [ ] Change hostname          now: web-01
+   5) [ ] Change IP / subnet / gw  now: eth0 192.168.1.11/24 (dhcp) ...
+   6) [ ] Change DNS servers       now: 192.168.1.1
+```
+
+Details are asked next, then you see the planned changes and confirm.
+See [System settings](#-system-settings) for doing the same with flags.
+
 Add options to the end of the one-liner:
 
 | Option          | What it does                                          |
@@ -22,12 +36,72 @@ Add options to the end of the one-liner:
 | `--keep-all`    | keep every repo file, not just the ones your OS needs |
 | `--flakes`      | NixOS: force `nix profile install` (flakes)           |
 | `--no-flakes`   | NixOS: force `nix-env -iA` (channels)                 |
+| `--no-dotfiles` | skip the dotfiles (system settings only)              |
+| `--menu`        | always show the menu (`--no-menu`: never)             |
+| `--dry-run`     | show the system changes without making them           |
+| `-y`            | don't ask "Go ahead?"                                 |
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) --zsh
 ```
 
 When it finishes, run `source ~/.bashrc` or open a new terminal.
+
+
+## 🛠 System settings
+
+Pick them in the menu, or pass flags (flags skip the menu):
+
+| Flag                 | What it does                                    |
+|----------------------|-------------------------------------------------|
+| `--add-user NAME`    | create a user with sudo rights; the password is |
+|                      | typed twice (hidden)                            |
+| `--ssh`              | enable SSH for non-root users, root login off   |
+| `--ssh-key KEY`      | authorize a key: text, a file or `gh:<user>`    |
+| `--ssh-keys-only`    | turn password logins off (needs a key)          |
+| `--hostname NAME`    | change the hostname                             |
+| `--ip ADDR[/PFX]`    | static IPv4 address, or `dhcp`                  |
+| `--subnet MASK`      | `255.255.255.0` or `/24` (if not in `--ip`)     |
+| `--gateway ADDR`     | default gateway                                 |
+| `--dns "A B"`        | DNS servers                                     |
+| `--iface NAME`       | interface (default: the one with the route)     |
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) \
+  --no-dotfiles --add-user ops --ssh-key gh:octocat --hostname web-01 \
+  --ip 192.168.1.50/24 --gateway 192.168.1.1 --dns "1.1.1.1 9.9.9.9"
+```
+
+How each one is applied:
+
+| Setting  | Distros                  | How                                    |
+|----------|--------------------------|----------------------------------------|
+| User     | Debian, Ubuntu           | `useradd` + group `sudo`, `chpasswd`   |
+|          | Fedora, Arch, SUSE, ...  | group `wheel` (+ sudoers rule if off)  |
+|          | Alpine                   | `adduser` + `wheel`, installs sudo     |
+| SSH      | all but NixOS            | `sshd_config.d/10-dotfiles-nixish.conf`|
+| Hostname | all but NixOS            | `hostnamectl` or `/etc/hostname`       |
+| Network  | NetworkManager           | `nmcli connection modify`              |
+|          | netplan (Ubuntu server)  | `netplan set` + `netplan apply`        |
+|          | systemd-networkd         | `00-dotfiles-nixish-<iface>.network`   |
+|          | ifupdown (Debian)        | `/etc/network/interfaces`              |
+|          | wicked (openSUSE)        | `ifcfg-<iface>`                        |
+| All      | NixOS                    | `/etc/nixos/dotfiles-nixish-system.nix`|
+|          |                          | + `nixos-rebuild switch`               |
+
+Safety:
+
+- Every changed file gets a backup: `<file>.dotfiles-nixish.bak.<time>`.
+- Configs are checked before use (`sshd -t`, `visudo -c`,
+  `netplan generate`, `nixos-rebuild`); on failure they are undone.
+- Password logins stay on when you have no SSH key (no lock-out).
+- Passwords go to `chpasswd` on stdin - never on a command line or disk.
+  Non-interactive: set `DOTFILES_USER_PASSWORD`.
+- Over SSH, a network change is applied 5 s later in the background, so
+  your session ends cleanly. Reconnect on the new address.
+- NixOS: the generated module is imported into `configuration.nix`
+  (and `git add`ed for flakes). The new user is also created at once, so
+  the password works; it lasts unless `users.mutableUsers = false`.
 
 
 ## 📦 What it installs
@@ -259,6 +333,7 @@ sudo install -m 755 ~/.dotfiles-nixish/scripts/xtree.sh /usr/local/bin/xtree
 ```
 install.sh                  the bootstrap script
 scripts/xtree.sh            xtree
+scripts/system-setup.sh     user, SSH, hostname, IP, DNS
 config/bashrc_append.sh     ~/.bashrc block
 config/zshrc_append.sh      ~/.zshrc block
 packages/package_list.txt   package names per distro       [distro]

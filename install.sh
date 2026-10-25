@@ -5,20 +5,17 @@
 #  One-liner:
 #    bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh)
 #
+#  Run it in a terminal and it first shows a menu: dotfiles, SSH access for
+#  non-root users, hostname, IP address/subnet/gateway, DNS. Every choice can
+#  also be given as an option (see --help) for unattended installs.
+#
 #  Supports apt (Debian/Ubuntu/Mint/Pop), dnf/yum (Fedora/RHEL/Rocky/Alma),
 #  pacman (Arch/Manjaro/Endeavour), zypper (openSUSE), apk (Alpine) and
 #  NixOS (with or without flakes: nix-env + channels, or nix profile).
 #  Safe to re-run: packages already present are skipped, the shell config block
 #  is replaced in place, and the xtree binary/symlink are refreshed.
-#
-#  Options:
-#    --zsh            also install zsh (then ~/.zshrc gets configured too)
-#    --no-packages    skip package installation (config + xtree only)
-#    --flakes         NixOS: force `nix profile install nixpkgs#...`
-#    --no-flakes      NixOS: force `nix-env -iA` with channels
-#    --keep-all       keep every repo file (default: only what this OS needs)
-#    -h, --help       show help
-#  Env overrides: DOTFILES_REPO, DOTFILES_BRANCH, DOTFILES_DIR, DOTFILES_PM
+#  Env overrides: DOTFILES_REPO, DOTFILES_BRANCH, DOTFILES_DIR, DOTFILES_PM,
+#                 DOTFILES_NET_BACKEND (nm|netplan|networkd|ifupdown|wicked|nixos)
 # =============================================================================
 set -uo pipefail
 
@@ -33,19 +30,82 @@ TS="$(date +%Y%m%d-%H%M%S)"
 OPT_ZSH=false
 OPT_PACKAGES=true
 OPT_KEEP_ALL=false
+OPT_DOTFILES=true      # tools + shell config + xtree
+OPT_MENU=auto          # auto: show the menu when run in a terminal without system options
+OPT_YES=false
+OPT_DRY=false
 DIRECT_DL=false
 NIX_MODE=""        # "env" (channels, no flakes) or "profile" (flakes); auto-detected if empty
-for arg in "$@"; do
-    case "$arg" in
+# system settings (applied by scripts/system-setup.sh)
+DO_SSH=false; SSH_KEY=""; SSH_PASSWORDS=true
+DO_USER=false; NEW_USER=""; NEW_USER_PW=""
+NEW_HOSTNAME=""; NET_IFACE=""; NET_IP=""; NET_MASK=""; NET_GW=""; NET_DNS=""
+SYS_FLAGS=false
+
+usage() {
+    cat <<'EOF'
+dotfiles-nixish installer
+
+  bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) [options]
+
+Run in a terminal, it first shows a menu. Giving system options skips the menu.
+
+Dotfiles:
+  --zsh                 also install zsh and configure ~/.zshrc
+  --no-packages         skip package installs (shell config + xtree only)
+  --no-dotfiles         skip tools, shell config and xtree (system settings only)
+  --flakes | --no-flakes   NixOS: force nix profile (flakes) / nix-env (channels)
+  --keep-all            keep every repo file (default: only what this OS needs)
+
+System settings:
+  --add-user NAME       create a user with sudo rights (asks for the password)
+  --ssh                 enable SSH access for non-root users (root login off)
+  --ssh-key KEY         also authorize a public key for you: the key text,
+                        a file, or gh:<github-user>   (implies --ssh)
+  --ssh-keys-only       turn password logins off (only if you have a key)
+  --hostname NAME       change the hostname
+  --ip ADDR[/PREFIX]    static IPv4 address, e.g. 192.168.1.50/24 - or "dhcp"
+  --subnet MASK         subnet as 255.255.255.0 or /24 (if not given in --ip)
+  --gateway ADDR        default gateway
+  --dns "A B"           DNS servers (space or comma separated)
+  --iface NAME          network interface (default: the one with the default route)
+
+Other:
+  --menu | --no-menu    always / never show the menu
+  -y, --yes             don't ask for confirmation
+  --dry-run             show the system changes without making them
+  -h, --help            show this help
+EOF
+}
+
+need_val() { [[ $# -ge 2 && -n "$2" ]] || { echo "Option $1 needs a value (try --help)" >&2; exit 2; }; }
+while [[ $# -gt 0 ]]; do
+    [[ "$1" == --*=* ]] && set -- "${1%%=*}" "${1#*=}" "${@:2}"
+    case "$1" in
         --zsh) OPT_ZSH=true ;;
         --no-packages) OPT_PACKAGES=false ;;
+        --no-dotfiles) OPT_DOTFILES=false ;;
         --flakes) NIX_MODE=profile ;;
         --no-flakes) NIX_MODE="env" ;;
         --keep-all) OPT_KEEP_ALL=true ;;
-        -h|--help) sed -n '2,23p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'
-                   echo "See https://github.com/entropytwo-ai/dotfiles-nixish"; exit 0 ;;
-        *) echo "Unknown option: $arg (try --help)" >&2; exit 2 ;;
+        --add-user) need_val "$@"; NEW_USER="$2"; SYS_FLAGS=true; shift ;;
+        --ssh) DO_SSH=true; SYS_FLAGS=true ;;
+        --ssh-key) need_val "$@"; SSH_KEY="$2"; DO_SSH=true; SYS_FLAGS=true; shift ;;
+        --ssh-keys-only) SSH_PASSWORDS=false; DO_SSH=true; SYS_FLAGS=true ;;
+        --hostname) need_val "$@"; NEW_HOSTNAME="$2"; SYS_FLAGS=true; shift ;;
+        --ip) need_val "$@"; NET_IP="$2"; SYS_FLAGS=true; shift ;;
+        --subnet|--netmask) need_val "$@"; NET_MASK="$2"; SYS_FLAGS=true; shift ;;
+        --gateway) need_val "$@"; NET_GW="$2"; SYS_FLAGS=true; shift ;;
+        --dns) need_val "$@"; NET_DNS="$2"; SYS_FLAGS=true; shift ;;
+        --iface|--interface) need_val "$@"; NET_IFACE="$2"; shift ;;
+        --menu) OPT_MENU=yes ;;
+        --no-menu) OPT_MENU=no ;;
+        -y|--yes) OPT_YES=true ;;
+        --dry-run) OPT_DRY=true ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
     esac
+    shift
 done
 
 # ---------------------------------------------------------------- pretty output
@@ -74,22 +134,6 @@ export PATH="/usr/local/bin:$PATH:/usr/games"
 
 # ---------------------------------------------------------------- sanity checks
 [[ "$(uname -s)" == "Linux" ]] || die "This installer only supports Linux."
-
-if [[ $EUID -eq 0 ]]; then
-    SUDO=()
-else
-    have sudo || die "sudo is required (or run this script as root)."
-    # Pass our PATH through: sudo's secure_path (and sudo-rs defaults) point at
-    # /usr/bin:/bin, which on NixOS holds no coreutils - `sudo install` would fail.
-    # (sbin dirs appended: they are in secure_path but often not in a user's PATH)
-    SUDO=(sudo "$(command -v env)" "PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin")
-    step "Requesting sudo (needed for package installs and /usr/local/bin)"
-    sudo -v || die "Could not obtain sudo privileges."
-    # keep sudo alive while we work
-    ( while kill -0 $$ 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done ) &
-    SUDO_KEEPALIVE=$!
-    trap 'kill "${SUDO_KEEPALIVE:-}" 2>/dev/null' EXIT
-fi
 
 # Configure the *real* user even when invoked via `sudo bash install.sh`
 if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
@@ -156,6 +200,261 @@ fi
 nix_mode_label() { [[ "$NIX_MODE" == "env" ]] && echo "nix-env + channels (no flakes)" || echo "nix profile + flakes"; }
 
 step "Detected: ${OS_NAME} (${ARCH}) - package manager: ${PM}$([[ "$PM" == nix ]] && echo " [$(nix_mode_label)]") - user: ${TARGET_USER}"
+
+# =============================================================================
+#  0. What should this run do? (menu, or the system options given on the command line)
+# =============================================================================
+valid_ipv4() {
+    local o; local -a p
+    [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+    IFS=. read -ra p <<<"$1"
+    for o in "${p[@]}"; do (( 10#$o <= 255 )) || return 1; done
+}
+valid_ipv6() { [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:.]+$ ]]; }
+valid_hostname() {
+    [[ ${#1} -le 253 && "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ ]]
+}
+ip2int() { local a b c d; IFS=. read -r a b c d <<<"$1"; echo $(( (10#$a << 24) | (10#$b << 16) | (10#$c << 8) | 10#$d )); }
+int2ip() { echo "$(( ($1 >> 24) & 255 )).$(( ($1 >> 16) & 255 )).$(( ($1 >> 8) & 255 )).$(( $1 & 255 ))"; }
+prefix2mask() { int2ip $(( (0xFFFFFFFF << (32 - $1)) & 0xFFFFFFFF )); }
+mask2prefix() {   # 255.255.255.0, 24 or /24 -> 24
+    local m="${1#/}" v inv n=0
+    if [[ "$m" =~ ^[0-9]{1,2}$ ]]; then (( m >= 1 && m <= 32 )) && { echo "$m"; return 0; }; return 1; fi
+    valid_ipv4 "$m" || return 1
+    v=$(ip2int "$m"); inv=$(( ~v & 0xFFFFFFFF ))
+    (( (inv & (inv + 1)) == 0 )) || return 1          # mask bits must be contiguous
+    while (( v & 0x80000000 )); do n=$((n + 1)); v=$(( (v << 1) & 0xFFFFFFFF )); done
+    (( n >= 1 )) && echo "$n"
+}
+same_subnet() { local m; m=$(( (0xFFFFFFFF << (32 - $3)) & 0xFFFFFFFF )); (( ($(ip2int "$1") & m) == ($(ip2int "$2") & m) )); }
+
+# current state (read-only)
+cur_iface() { ip -o -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i+1); exit}}'; }
+cur_addr()  { ip -o -4 addr show dev "$1" scope global 2>/dev/null | awk '{print $4; exit}'; }
+cur_gw()    { ip -4 route show default dev "$1" 2>/dev/null | awk '{print $3; exit}'; }
+cur_mode()  { ip -o -4 addr show dev "$1" 2>/dev/null | grep -q dynamic && echo DHCP || echo static; }
+cur_dns() {
+    local d
+    d="$(awk '$1 == "nameserver" {print $2}' /etc/resolv.conf 2>/dev/null | grep -v '^127\.' | tr '\n' ' ')"
+    if [[ -z "${d// }" ]] && have resolvectl; then
+        d="$(resolvectl dns 2>/dev/null | sed 's/^[^:]*://' | tr ' ' '\n' | grep -E '^[0-9a-fA-F:.]+$' | grep -v '^127\.' | awk '!s[$0]++' | tr '\n' ' ')"
+    fi
+    echo "${d% }"
+}
+list_ifaces() { local i o=(); for i in /sys/class/net/*; do [[ "${i##*/}" == lo ]] || o+=("${i##*/}"); done; echo "${o[*]}"; }
+
+DO_HOST=false; DO_NET=false; DO_DNS=false; sel=""
+NET_MODE=static; NET_ADDR=""; NET_PREFIX=""; DNS_LIST=""
+
+# Check/complete the network choices. Sets PLAN_ERR on failure.
+plan_network() {
+    local cur p
+    PLAN_ERR=""
+    NET_IFACE="${NET_IFACE:-$(cur_iface)}"
+    [[ -n "$NET_IFACE" ]] || { PLAN_ERR="no default network interface found - use --iface"; return 1; }
+    [[ -e "/sys/class/net/$NET_IFACE" ]] || { PLAN_ERR="network interface '$NET_IFACE' does not exist (have: $(list_ifaces))"; return 1; }
+    cur="$(cur_addr "$NET_IFACE")"
+    if [[ "${NET_IP,,}" == dhcp ]]; then NET_MODE=dhcp; NET_ADDR=""; NET_PREFIX=""; NET_GW=""; return 0; fi
+    NET_MODE=static
+    NET_ADDR="${NET_IP:-${cur%/*}}"; NET_ADDR="${NET_ADDR%%/*}"
+    valid_ipv4 "$NET_ADDR" || { PLAN_ERR="'$NET_ADDR' is not a valid IPv4 address"; return 1; }
+    if [[ "$NET_IP" == */* ]]; then p="${NET_IP#*/}"; elif [[ -n "$NET_MASK" ]]; then p="$NET_MASK"; else p="${cur#*/}"; [[ "$cur" == */* ]] || p=""; fi
+    [[ -n "$p" ]] || { PLAN_ERR="no subnet given - use e.g. 192.168.1.50/24 or --subnet 255.255.255.0"; return 1; }
+    NET_PREFIX="$(mask2prefix "$p")" || { PLAN_ERR="'$p' is not a valid subnet mask or prefix"; return 1; }
+    if [[ -z "$NET_GW" ]]; then
+        NET_GW="$(cur_gw "$NET_IFACE")"
+        [[ -n "$NET_GW" ]] && ! same_subnet "$NET_ADDR" "$NET_GW" "$NET_PREFIX" && NET_GW=""
+        [[ -n "$NET_GW" ]] || { PLAN_ERR="no gateway given - use --gateway"; return 1; }
+    fi
+    valid_ipv4 "$NET_GW" || { PLAN_ERR="'$NET_GW' is not a valid gateway address"; return 1; }
+    same_subnet "$NET_ADDR" "$NET_GW" "$NET_PREFIX" || { PLAN_ERR="gateway $NET_GW is not inside $NET_ADDR/$NET_PREFIX"; return 1; }
+    [[ "$NET_ADDR" != "$NET_GW" ]] || { PLAN_ERR="the address and the gateway are the same"; return 1; }
+}
+plan_dns() {   # normalise NET_DNS into DNS_LIST
+    local d out=()
+    PLAN_ERR=""
+    for d in ${NET_DNS//,/ }; do
+        valid_ipv4 "$d" || valid_ipv6 "$d" || { PLAN_ERR="'$d' is not a valid DNS server address"; return 1; }
+        [[ " ${out[*]} " == *" $d "* ]] || out+=("$d")
+    done
+    [[ ${#out[@]} -gt 0 ]] || { PLAN_ERR="no DNS servers given"; return 1; }
+    DNS_LIST="${out[*]}"
+}
+valid_key_arg() { [[ "$1" =~ ^(gh|github): || -f "$1" || "$1" =~ ^(ssh-|ecdsa-|sk-) ]]; }
+
+# --- interactive helpers (read from the terminal even with `curl ... | bash`)
+ask() {   # ask <var> <prompt> [default]
+    local _a
+    printf '   %s%s' "$2" "${3:+ [$3]}"; printf ': '
+    IFS= read -r -u 3 _a || { echo; die "No input - aborting."; }
+    _a="$(ltrim "$_a")"; _a="${_a%"${_a##*[![:space:]]}"}"
+    printf -v "$1" '%s' "${_a:-${3:-}}"
+}
+yesno() { local _r; ask _r "$1 (y/n)" "$2"; [[ "${_r,,}" == y* ]]; }
+valid_username() { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$1" != root ]]; }
+ask_password() {  # ask_password <user> -> NEW_USER_PW ; hidden input, typed twice
+    local a b
+    while true; do
+        printf '   Password for %s (hidden): ' "$1"; IFS= read -rs -u 3 a || { echo; die "No input - aborting."; }; echo
+        if [[ -z "$a" ]]; then printf '   %sThe password cannot be empty.%s\n' "$C_Y" "$C_0"; continue; fi
+        printf '   Type it again: '; IFS= read -rs -u 3 b || { echo; die "No input - aborting."; }; echo
+        if [[ "$a" != "$b" ]]; then printf '   %sThe passwords do not match - try again.%s\n' "$C_Y" "$C_0"; continue; fi
+        if (( ${#a} < 8 )) && ! yesno "That is shorter than 8 characters. Use it anyway?" n; then continue; fi
+        NEW_USER_PW="$a"; return 0
+    done
+}
+
+TTY_OK=false
+if [[ "$OPT_MENU" != no ]] && [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null; then TTY_OK=true; fi
+SHOW_MENU=false
+if $TTY_OK && { [[ "$OPT_MENU" == yes ]] || ! $SYS_FLAGS; }; then SHOW_MENU=true; fi
+
+if $SHOW_MENU; then
+    M=("$OPT_DOTFILES" "$([[ -n "$NEW_USER" ]] && echo true || echo false)" "$DO_SSH" "$([[ -n "$NEW_HOSTNAME" ]] && echo true || echo false)" \
+       "$([[ -n "$NET_IP$NET_MASK$NET_GW" ]] && echo true || echo false)" "$([[ -n "$NET_DNS" ]] && echo true || echo false)")
+    ci="$(cur_iface)"
+    while true; do
+        cur_net="${ci:-no default route}"; [[ -n "$ci" ]] && cur_net+=" $(cur_addr "$ci") ($(cur_mode "$ci")), gateway $(cur_gw "$ci")"
+        printf '\n%s  What should this run do?%s\n\n' "$C_B" "$C_0"
+        i=0
+        for label in "Dotfiles: tools, shell config, xtree" \
+                     "Create a user with sudo access" \
+                     "Enable SSH access for non-root users" \
+                     "Change hostname          now: $(hostname 2>/dev/null)" \
+                     "Change IP / subnet / gw  now: $cur_net" \
+                     "Change DNS servers       now: $(cur_dns)"; do
+            mark=" "; ${M[$i]} && mark="${C_G}x${C_0}"
+            printf '   %d) [%s] %s\n' $((i + 1)) "$mark" "$label"; i=$((i + 1))
+        done
+        printf '\n'
+        ask sel "Type numbers to toggle (e.g. \"2 3\"), Enter to start, q to quit"
+        case "$sel" in
+            q|Q) echo "   Nothing changed."; exit 0 ;;
+            "") if [[ " ${M[*]} " == *true* ]]; then break; else printf '   %sSelect at least one item.%s\n' "$C_Y" "$C_0"; fi ;;
+            *)  for n in ${sel//,/ }; do
+                    if [[ "$n" =~ ^[1-6]$ ]]; then if ${M[$((n - 1))]}; then M[n - 1]=false; else M[n - 1]=true; fi
+                    else printf '   %s"%s" is not a menu number%s\n' "$C_Y" "$n" "$C_0"; fi
+                done ;;
+        esac
+    done
+    OPT_DOTFILES=${M[0]}; DO_USER=${M[1]}; DO_SSH=${M[2]}; DO_HOST=${M[3]}; DO_NET=${M[4]}; DO_DNS=${M[5]}
+
+    if $DO_USER; then
+        printf '\n%s  New user with sudo access%s\n' "$C_B" "$C_0"
+        while true; do
+            ask NEW_USER "Username" "$NEW_USER"
+            valid_username "$NEW_USER" && break
+            printf '   %sUse lowercase letters, digits, - and _ (start with a letter), not root.%s\n' "$C_Y" "$C_0"
+        done
+        id "$NEW_USER" >/dev/null 2>&1 && info "$NEW_USER already exists - it will get sudo access and the new password."
+        $OPT_DRY || ask_password "$NEW_USER"
+    fi
+
+    if $DO_SSH; then
+        printf '\n%s  SSH access for non-root users%s  (root login over SSH will be turned off)\n' "$C_B" "$C_0"
+        while true; do
+            ask SSH_KEY "Public key for $TARGET_USER - paste it, a file path, or gh:<github-user> (Enter = none)" "$SSH_KEY"
+            [[ -z "$SSH_KEY" ]] || valid_key_arg "$SSH_KEY" && break
+            printf '   %sThat does not look like a public key (ssh-ed25519 AAAA...), a file or gh:user.%s\n' "$C_Y" "$C_0"
+        done
+        if [[ -n "$SSH_KEY" ]]; then yesno "Allow password logins too?" y && SSH_PASSWORDS=true || SSH_PASSWORDS=false
+        else SSH_PASSWORDS=true; fi
+    fi
+    if $DO_HOST; then
+        printf '\n%s  Hostname%s\n' "$C_B" "$C_0"
+        while true; do
+            ask NEW_HOSTNAME "New hostname" "$NEW_HOSTNAME"
+            valid_hostname "$NEW_HOSTNAME" && break
+            printf '   %sUse letters, digits and hyphens (dots between parts), e.g. web-01 or web-01.example.com%s\n' "$C_Y" "$C_0"
+        done
+    fi
+    if $DO_NET; then
+        printf '\n%s  IP address%s  (interfaces: %s)\n' "$C_B" "$C_0" "$(list_ifaces)"
+        while true; do
+            ask NET_IFACE "Interface" "${NET_IFACE:-$ci}"
+            c="$(cur_addr "$NET_IFACE")"
+            ask m "Static address or DHCP? (s/d)" "s"
+            if [[ "${m,,}" == d* ]]; then NET_IP=dhcp
+            else
+                ask NET_IP "IP address (e.g. 192.168.1.50 or 192.168.1.50/24)" "${c%/*}"
+                if [[ "$NET_IP" != */* ]]; then
+                    dp="${c#*/}"; [[ "$c" == */* ]] || dp=24
+                    ask NET_MASK "Subnet mask or prefix" "$(prefix2mask "$dp") = /$dp"
+                    NET_MASK="${NET_MASK%% *}"
+                fi
+                g="$(cur_gw "$NET_IFACE")"
+                ask NET_GW "Gateway" "$g"
+            fi
+            plan_network && break
+            printf '   %s%s - try again%s\n' "$C_Y" "$PLAN_ERR" "$C_0"; NET_GW=""; NET_MASK=""
+        done
+    fi
+    if $DO_DNS || { $DO_NET && [[ "$NET_MODE" == static && -z "$(cur_dns)" ]]; }; then
+        DO_DNS=true
+        printf '\n%s  DNS servers%s\n' "$C_B" "$C_0"
+        while true; do
+            ask NET_DNS "DNS servers, separated by spaces (e.g. 1.1.1.1 9.9.9.9)" "${NET_DNS:-$(cur_dns)}"
+            plan_dns && break
+            printf '   %s%s - try again%s\n' "$C_Y" "$PLAN_ERR" "$C_0"
+        done
+    fi
+else
+    if [[ -n "$NEW_USER" ]]; then
+        DO_USER=true
+        valid_username "$NEW_USER" || die "--add-user: '$NEW_USER' is not a valid username (lowercase letters, digits, - and _; not root)."
+        if [[ -n "${DOTFILES_USER_PASSWORD:-}" ]]; then NEW_USER_PW="$DOTFILES_USER_PASSWORD"
+        elif ! $OPT_DRY; then
+            { $TTY_OK || { exec 3</dev/tty; } 2>/dev/null; } || die "--add-user needs a terminal to ask for the password (or set DOTFILES_USER_PASSWORD)."
+            printf '\n%s  New user with sudo access: %s%s\n' "$C_B" "$NEW_USER" "$C_0"
+            ask_password "$NEW_USER"
+        fi
+    fi
+    [[ -n "$NEW_HOSTNAME" ]] && DO_HOST=true
+    [[ -n "$NET_IP$NET_MASK$NET_GW" ]] && DO_NET=true
+    [[ -n "$NET_DNS" ]] && DO_DNS=true
+    if $DO_HOST && ! valid_hostname "$NEW_HOSTNAME"; then die "'$NEW_HOSTNAME' is not a valid hostname."; fi
+    if [[ -n "$SSH_KEY" ]] && ! valid_key_arg "$SSH_KEY"; then die "--ssh-key: not a public key, a file or gh:<user>: $(short "$SSH_KEY" 40)"; fi
+    if $DO_NET; then plan_network || die "--ip/--subnet/--gateway: $PLAN_ERR"; fi
+    if $DO_DNS; then plan_dns || die "--dns: $PLAN_ERR"; fi
+fi
+# a static address keeps the current DNS servers unless new ones were chosen
+if $DO_NET && [[ "$NET_MODE" == static ]] && ! $DO_DNS; then
+    NET_DNS="$(cur_dns)"
+    if [[ -n "$NET_DNS" ]]; then plan_dns || DNS_LIST=""
+    else warn "No current DNS servers found - set them with --dns, or name lookups may stop working."; fi
+fi
+SYS_ANY=false; { $DO_USER || $DO_SSH || $DO_HOST || $DO_NET || $DO_DNS; } && SYS_ANY=true
+$OPT_DOTFILES || $SYS_ANY || die "Nothing to do (--no-dotfiles without any system option)."
+
+if $SYS_ANY; then
+    step "Planned system changes$($OPT_DRY && echo " (dry run - nothing will be changed)")"
+    $DO_USER && info "User:     $NEW_USER - $(id "$NEW_USER" >/dev/null 2>&1 && echo "exists, give sudo access + new password" || echo "create, sudo access, password set")"
+    $DO_SSH  && info "SSH:      enable for non-root users, root login off, passwords: $($SSH_PASSWORDS && echo on || echo "off (keys only)")${SSH_KEY:+, add key: $(short "$SSH_KEY" 30)}"
+    $DO_HOST && info "Hostname: $(hostname 2>/dev/null) → $NEW_HOSTNAME"
+    $DO_NET  && info "Network:  $NET_IFACE → $([[ "$NET_MODE" == dhcp ]] && echo DHCP || echo "$NET_ADDR/$NET_PREFIX ($(prefix2mask "$NET_PREFIX")), gateway $NET_GW")"
+    [[ -n "$DNS_LIST" ]] && info "DNS:      $DNS_LIST$($DO_DNS || echo "  (current servers, kept)")"
+    $OPT_DOTFILES || info "Dotfiles: skipped"
+    if $TTY_OK && ! $OPT_YES && ! $OPT_DRY; then
+        yesno "Go ahead?" y || { echo "   Nothing changed."; exit 0; }
+    fi
+fi
+
+if [[ $EUID -eq 0 ]]; then
+    SUDO=()
+else
+    have sudo || die "sudo is required (or run this script as root)."
+    # Pass our PATH through: sudo's secure_path (and sudo-rs defaults) point at
+    # /usr/bin:/bin, which on NixOS holds no coreutils - `sudo install` would fail.
+    # (sbin dirs appended: they are in secure_path but often not in a user's PATH)
+    SUDO=(sudo "$(command -v env)" "PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin")
+    step "Requesting sudo (needed for package installs, /usr/local/bin and system settings)"
+    sudo -v || die "Could not obtain sudo privileges."
+    # keep sudo alive while we work
+    ( while kill -0 $$ 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done ) &
+    SUDO_KEEPALIVE=$!
+    trap 'kill "${SUDO_KEEPALIVE:-}" 2>/dev/null' EXIT
+fi
+
 
 # ---------------------------------------------------------------- package manager wrappers
 REFRESHED=false
@@ -378,7 +677,7 @@ enable_epel() {
 # =============================================================================
 #  1. Prerequisites
 # =============================================================================
-if $OPT_PACKAGES; then
+if $OPT_DOTFILES && $OPT_PACKAGES; then
     [[ "$PM" == "none" ]] && warn "No supported package manager found - skipping package installs."
     if [[ "$PM" != "none" ]]; then
         step "Installing prerequisites"
@@ -410,7 +709,7 @@ else
     else
         info "git unavailable (or $SRC_DIR is not a git checkout) - downloading files directly..."
         mkdir -p "$SRC_DIR/scripts" "$SRC_DIR/config"
-        DL=(install.sh scripts/xtree.sh config/bashrc_append.sh config/zshrc_append.sh)
+        DL=(install.sh scripts/xtree.sh scripts/system-setup.sh config/bashrc_append.sh config/zshrc_append.sh)
         # only fetch the files this OS needs (see "Trimming" below)
         if $IS_NIXOS || $OPT_KEEP_ALL; then DL+=(flake.nix flake.lock default.nix nix/module.nix nix/packages.nix nix/xtree.nix); fi
         if ! $IS_NIXOS || $OPT_KEEP_ALL; then DL+=(packages/package_list.txt); fi
@@ -569,6 +868,10 @@ else
     trim_plain
 fi
 
+TOOLS=()
+ZSH_DONE=false
+XTREE_BIN_OK=false
+if $OPT_DOTFILES; then
 # =============================================================================
 #  3. Packages
 # =============================================================================
@@ -842,18 +1145,35 @@ else
     ok "$(disp "$LOGIN_RC") already loads ~/.bashrc - no changes written"
 fi
 
-ZSH_DONE=false
 if have zsh; then
     install_block "$TARGET_HOME/.zshrc" "$SRC_DIR/config/zshrc_append.sh" && ZSH_DONE=true
 else
     printf '\n'; info "zsh not installed - skipping ~/.zshrc (re-run with --zsh to install it)."
 fi
 
+XTREE_BIN_OK=true
+fi   # OPT_DOTFILES
+
+# =============================================================================
+#  6b. System settings: SSH, hostname, IP address/subnet/gateway, DNS
+# =============================================================================
+SYS_NOTES=()
+if $SYS_ANY; then
+    if [[ -f "$SRC_DIR/scripts/system-setup.sh" ]]; then
+        # shellcheck source=scripts/system-setup.sh
+        . "$SRC_DIR/scripts/system-setup.sh"
+        system_setup
+    else
+        warn "scripts/system-setup.sh missing in $SRC_DIR - system settings skipped (git -C $SRC_DIR pull)."
+    fi
+fi
+
 # =============================================================================
 #  7. Summary
 # =============================================================================
 step "Summary"
-for t in "${TOOLS[@]}" xtree; do
+XT=(); $XTREE_BIN_OK && XT=(xtree)
+for t in "${TOOLS[@]}" "${XT[@]}"; do
     case "$t" in
         bat)   c=bat; have bat || c=batcat ;;
         xtree) c="$XTREE_BIN" ;;
@@ -863,6 +1183,9 @@ for t in "${TOOLS[@]}" xtree; do
     else printf '   %s✖%s %s %s(missing)%s\n' "$C_R" "$C_0" "$t" "$C_Y" "$C_0"; fi
 done
 
+if [[ ${#SYS_NOTES[@]} -gt 0 ]]; then
+    printf '\n'; for n in "${SYS_NOTES[@]}"; do printf '   %s✔%s %s\n' "$C_G" "$C_0" "$n"; done
+fi
 [[ -n "$TRIM_NOTE" ]] && printf '\n   %sℹ%s %s\n' "$C_C" "$C_0" "$TRIM_NOTE"
 
 if [[ ${#WARNINGS[@]} -gt 0 ]]; then
@@ -870,6 +1193,7 @@ if [[ ${#WARNINGS[@]} -gt 0 ]]; then
     printf '   - %s\n' "${WARNINGS[@]}"
 fi
 
+if $OPT_DOTFILES; then
 cat <<EOF
 
 ${C_B}${C_G}🎉 dotfiles-nixish is installed!${C_0}
@@ -880,4 +1204,7 @@ ${C_B}${C_G}🎉 dotfiles-nixish is installed!${C_0}
    Try:  ${C_C}l${C_0}  ${C_C}ll${C_0}  ${C_C}cowsays${C_0}  ${C_C}xtree -f -L 2 .${C_0}  ${C_C}xtree -r -p -u -t ~${C_0}  ${C_C}duf${C_0}  ${C_C}btop${C_0}
    Update later:  bash ${SRC_DIR}/install.sh   (after: git -C ${SRC_DIR} pull)
 EOF
+else
+    printf '\n%s%s🎉 Done%s%s\n' "$C_B" "$C_G" "$($OPT_DRY && echo " (dry run - nothing was changed)")" "$C_0"
+fi
 exit 0
