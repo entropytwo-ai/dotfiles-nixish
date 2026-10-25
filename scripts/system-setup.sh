@@ -847,6 +847,43 @@ nixos_failed_units() {
         | tr ', ' '\n\n' | grep -v '^$' | awk '!seen[$0]++' | head -8 | paste -sd' ' -
 }
 
+# kernel filesystems an unprivileged LXC container may not mount - their
+# failure on switch is expected and says nothing about our settings
+CONTAINER_NOISE='sys-kernel-(debug|tracing|config)\.mount|sys-fs-fuse-connections\.mount|dev-(hugepages|mqueue)\.mount|systemd-(sysctl|modules-load|binfmt|udev-trigger|udevd)\.service|proc-sys-fs-binfmt_misc\.(auto)?mount'
+
+# keep_log <tmp-log> <wanted-path> : copy a log somewhere that survives the
+# end of the run ($WORKDIR is deleted on exit) and print where it went
+keep_log() {
+    local d
+    for d in "$2" "$HOME/${2##*/}"; do
+        if [[ "$d" == "$HOME"/* ]]; then cp "$1" "$d" 2>/dev/null && { echo "$d"; return; }
+        else sudo_ tee "$d" < "$1" >/dev/null 2>&1 && { echo "$d"; return; }; fi
+    done
+    echo "$1 (deleted when the installer exits)"
+}
+
+# NixOS SSH check. Container images (lxc-container / proxmox-lxc) set
+# services.openssh.startWhenNeeded = true: then systemd itself listens on the
+# port via sshd.socket and starts sshd per connection - there is no running
+# sshd.service, so check the socket too. The first start also generates host
+# keys (sshd-keygen), which can take a few seconds - so wait a little.
+nixos_check_ssh() {
+    local port _ mode=""
+    port="$(sudo_ sed -n 's/^[[:space:]]*Port[[:space:]]\+\([0-9]\+\).*/\1/p' /etc/ssh/sshd_config 2>/dev/null | head -1)"
+    port="${port:-22}"
+    for _ in $(seq 1 20); do
+        if systemctl is-active -q sshd.socket 2>/dev/null; then mode="socket"
+        elif systemctl is-active -q sshd.service 2>/dev/null; then mode="service"; fi
+        [[ -n "$mode" ]] && port_open "$port" && break
+        mode=""; sleep 1
+    done
+    case "$mode" in
+        socket)  ok "SSH is accepting connections on port $port (sshd.socket: sshd starts per connection - normal for NixOS containers)" ;;
+        service) ok "sshd is running and accepting connections on port $port" ;;
+        *) warn "SSH is not answering on port $port after 20 s - check: systemctl status sshd.socket sshd.service sshd-keygen.service" ;;
+    esac
+}
+
 NIX_STATE=""   # ok | failed | background | manual | dry ("" = nothing for NixOS)
 nixos_apply() {
     [[ ${#NIX_PARTS[@]} -gt 0 ]] || return 0
@@ -885,7 +922,7 @@ nixos_apply() {
     sys_before=$(readlink -f /run/current-system 2>/dev/null)
     sudo_ nixos-rebuild switch >"$WORKDIR/rebuild.log" 2>&1 || rc=$?
     sys_after=$(readlink -f /run/current-system 2>/dev/null)
-    [[ $rc -ne 0 ]] && { sudo_ cp "$WORKDIR/rebuild.log" "$log" 2>/dev/null || log="$WORKDIR/rebuild.log"; }
+    [[ $rc -ne 0 ]] && log="$(keep_log "$WORKDIR/rebuild.log" "$log")"
     if [[ $rc -eq 0 ]]; then
         ok "nixos-rebuild switch finished"
         NIX_STATE=ok
@@ -894,7 +931,14 @@ nixos_apply() {
         # systemd units failed to (re)start (exit 4) - common in LXC/Incus
         # containers. The settings ARE applied, so keep the config as is.
         ok "nixos-rebuild built and activated the new configuration (it is also the boot default)"
-        warn "Some systemd units failed to start during the switch - usually container units, not these settings: $(nixos_failed_units "$WORKDIR/rebuild.log" | sed 's/^$/see the log/'). Check: systemctl --failed. Log: $log"
+        local units other
+        units="$(nixos_failed_units "$WORKDIR/rebuild.log")"
+        other="$(tr ' ' '\n' <<<"$units" | grep -v '^$' | grep -vxE "$CONTAINER_NOISE" | paste -sd' ' -)"
+        if [[ -n "$units" && -z "$other" ]]; then
+            info "Ignored: $units failed to start - normal in an unprivileged LXC container (no access to it), not related to these settings"
+        else
+            warn "Some systemd units failed to start during the switch: ${other:-see the log}. Check: systemctl --failed. Log: $log"
+        fi
         NIX_STATE=ok
     else
         warn "nixos-rebuild failed to build - the running system was not changed. Not applied: $(nixos_not_applied). Full log: $log"
@@ -909,8 +953,7 @@ nixos_apply() {
         if sudo_ nixos-rebuild dry-build >"$WORKDIR/dry.log" 2>&1; then
             info "It does - so the new settings caused the failure. Please report it with $log"
         else
-            local dlog=/var/log/dotfiles-nixish-dry-build.log
-            sudo_ cp "$WORKDIR/dry.log" "$dlog" 2>/dev/null || dlog="$WORKDIR/dry.log"
+            local dlog; dlog="$(keep_log "$WORKDIR/dry.log" /var/log/dotfiles-nixish-dry-build.log)"
             warn "Your NixOS configuration did not build before this run either ('sudo nixos-rebuild dry-build' fails). Fix it first, then re-run. Log: $dlog"
             { grep -E '^[[:space:]]*error:' "$WORKDIR/dry.log" || tail -3 "$WORKDIR/dry.log"; } \
                 | sed 's/^[[:space:]]*//' | awk '!seen[$0]++' | head -5 | sed 's/^/        /'
@@ -920,8 +963,7 @@ nixos_apply() {
     fi
     # verify what we asked for
     if $DO_SSH; then
-        if systemctl is-active -q sshd 2>/dev/null && port_open 22; then ok "sshd is running and accepting connections on port 22"
-        else warn "sshd is not answering on port 22 - check: systemctl status sshd"; fi
+        nixos_check_ssh
         SYS_NOTES+=("SSH: ssh $TARGET_USER@<this-host>  (root login off, passwords: ${SSH_NOTE_PW:-yes})")
     fi
     if $DO_HOST; then
