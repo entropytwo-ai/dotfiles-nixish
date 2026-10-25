@@ -47,6 +47,7 @@ Packages that fail to install only produce a warning. The installer keeps going.
   - A greeting in every interactive shell: `fastfetch` with a `fortune | cowsay` logo 🐄
 - **`~/.zshrc`** (only if zsh is installed): the same settings in zsh syntax (`setopt APPEND_HISTORY`, `SAVEHIST`, and so on)
 - Before an rc file is changed, a backup is saved as `*.dotfiles-nixish.bak.<timestamp>`.
+- **Every setting exists only once.** Lines outside the block that set something the block sets again (e.g. Ubuntu's stock `HISTSIZE=1000`, `HISTCONTROL=ignoreboth`, `alias ll='ls -alF'`) are removed and listed in the installer output. Only simple top-level one-line statements are touched. Lines inside `if`/`case` blocks, `PATH` and `HISTFILE` are left alone. If the result would not pass `bash -n`/`zsh -n`, the file is left unchanged. The originals stay in the `.bak` file.
 
 ## ❄️ NixOS (with or without flakes)
 

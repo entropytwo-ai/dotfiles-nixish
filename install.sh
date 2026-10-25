@@ -507,6 +507,42 @@ fi
 # =============================================================================
 #  6. Shell config (idempotent BEGIN/END block)
 # =============================================================================
+# Remove lines OUTSIDE our block that set something the block sets again
+# (e.g. Ubuntu's stock HISTSIZE=1000 or alias ll='ls -alF'), so every setting
+# exists only once. The keys are read from the snippet itself. Only simple
+# top-level (column 0) one-line statements are touched - nothing inside if/case
+# blocks - and the result must still pass `bash -n`/`zsh -n`, otherwise nothing
+# is removed. The full original is kept in the timestamped .bak file.
+dedupe_rc() {  # dedupe_rc <rcfile> <snippet> <file-to-filter-in-place>
+    local rc="$1" snippet="$2" f="$3" vars aliases opts pat removed shell_chk
+    # PATH is built up incrementally and HISTFILE's default must not clobber a user value
+    vars=$(grep -oE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "$snippet" \
+           | sed -E 's/^[[:space:]]*(export[[:space:]]+)?//; s/=$//' | grep -vxE 'PATH|HISTFILE' | sort -u | paste -sd'|' -)
+    aliases=$(grep -oE '^[[:space:]]*alias[[:space:]]+[A-Za-z0-9_.-]+=' "$snippet" \
+           | sed -E 's/^[[:space:]]*alias[[:space:]]+//; s/=$//' | sort -u | paste -sd'|' -)
+    opts=$(grep -oE '^[[:space:]]*(shopt[[:space:]]+-[su]|setopt)[[:space:]]+[A-Za-z_]+' "$snippet" \
+           | awk '{print $NF}' | sort -u | paste -sd'|' -)
+    pat='^('
+    [[ -n "$vars" ]]    && pat+="(export[[:space:]]+)?($vars)=|"
+    [[ -n "$aliases" ]] && pat+="alias[[:space:]]+($aliases)=|"
+    [[ -n "$opts" ]]    && pat+="(shopt[[:space:]]+-[su]|setopt)[[:space:]]+($opts)([[:space:]]*(#.*)?)$|"
+    pat="${pat%|})"
+    [[ "$pat" == '^()' ]] && return 0
+
+    awk -v p="$pat" '$0 ~ p && $0 !~ /\\$/ {next} {print}' "$f" > "$f.dd"
+    removed=$(awk -v p="$pat" '$0 ~ p && $0 !~ /\\$/' "$f")
+    [[ -z "$removed" ]] && { rm -f "$f.dd"; return 0; }
+
+    case "$rc" in *zshrc*) shell_chk=zsh ;; *) shell_chk=bash ;; esac
+    if have "$shell_chk" && ! "$shell_chk" -n "$f.dd" 2>/dev/null; then
+        warn "$rc: could not safely remove settings duplicated by the dotfiles-nixish block - left as-is."
+        rm -f "$f.dd"; return 0
+    fi
+    mv "$f.dd" "$f"
+    info "Removed from $rc (now set once, in the dotfiles-nixish block):"
+    printf '%s\n' "$removed" | sed 's/^/        - /'
+}
+
 install_block() {  # install_block <rcfile> <snippet>
     local rc="$1" snippet="$2" tmp nb ne
     [[ -f "$snippet" ]] || { warn "Snippet $snippet missing"; return 1; }
@@ -519,6 +555,7 @@ install_block() {  # install_block <rcfile> <snippet>
     tmp="$WORKDIR/rc.$$"
     awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
         $0==b {skip=1; next}  $0==e {skip=0; next}  !skip {print}' "$rc" > "$tmp.base"
+    dedupe_rc "$rc" "$snippet" "$tmp.base"
     # drop trailing blank lines left behind by a previous block
     sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp.base" > "$tmp"
     { [[ -s "$tmp" ]] && echo; cat "$snippet"; } >> "$tmp"
