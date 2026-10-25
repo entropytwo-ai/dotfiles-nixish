@@ -1,12 +1,11 @@
 # dotfiles-nixish 🐧✨
 
-![bash](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
-![zsh](https://img.shields.io/badge/bonus-zsh-F15A24?logo=zsh&logoColor=white)
-![distros](https://img.shields.io/badge/distros-Debian%20%7C%20Ubuntu%20%7C%20Fedora%20%7C%20RHEL%20%7C%20Arch%20%7C%20openSUSE%20%7C%20Alpine%20%7C%20NixOS-blue)
-![nixos](https://img.shields.io/badge/NixOS-flakes%20%26%20no%20flakes-5277C3?logo=nixos&logoColor=white)
-![idempotent](https://img.shields.io/badge/re--run-safe-success)
+![bash][badge-bash] ![zsh][badge-zsh] ![distros][badge-distros]
+![nixos][badge-nixos] ![re-run safe][badge-safe]
 
-> Set up a fresh Linux box the way I like it, with **one command**. Works on regular distros *and* NixOS (with or without flakes).
+> Set up a fresh Linux box the way I like it, with **one command**.
+> Works on regular distros *and* NixOS (with or without flakes).
+
 
 ## 🚀 One-liner install
 
@@ -14,57 +13,140 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh)
 ```
 
-Options: `--zsh` also installs zsh and configures `~/.zshrc`. `--no-packages` sets up only the config and xtree. `--keep-all` keeps every repo file (see below).
+Add options to the end of the one-liner:
+
+| Option          | What it does                                          |
+|-----------------|-------------------------------------------------------|
+| `--zsh`         | also install zsh and configure `~/.zshrc`             |
+| `--no-packages` | only set up the shell config and xtree                |
+| `--keep-all`    | keep every repo file, not just the ones your OS needs |
+| `--flakes`      | NixOS: force `nix profile install` (flakes)           |
+| `--no-flakes`   | NixOS: force `nix-env -iA` (channels)                 |
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) --zsh
 ```
 
-After it finishes, run `source ~/.bashrc` or open a new terminal.
+When it finishes, run `source ~/.bashrc` or open a new terminal.
+
 
 ## 📦 What it installs
 
-| Tool | What it is |
-|------|------------|
-| `eza` | modern `ls` (if it's not in your distro's repos, it comes from the official eza apt repo or a GitHub release binary) |
-| `duf` | nicer `df` |
-| `cowsay` + `fortune-mod` | 🐮 wisdom |
-| `fastfetch` | system info banner (if it's not in your repos, it comes from the official GitHub .deb, .rpm or tarball) |
-| `tldr` | simplified man pages (or `tealdeer`) |
-| `nmap`, `ncdu`, `btop`, `fzf`, `glances`, `curl`, `bat` | everyday tools (on Debian/Ubuntu, `bat` is also linked from `batcat`) |
+| Tool                     | What it is                           |
+|--------------------------|--------------------------------------|
+| `eza`                    | modern `ls`                          |
+| `duf`                    | nicer `df`                           |
+| `cowsay` + `fortune-mod` | 🐮 wisdom                            |
+| `fastfetch`              | system info banner                   |
+| `tldr`                   | simplified man pages (or `tealdeer`) |
+| `nmap`                   | network scanner                      |
+| `ncdu`                   | disk usage browser                   |
+| `btop`, `glances`        | system monitors                      |
+| `fzf`                    | fuzzy finder                         |
+| `curl`                   | downloads / HTTP                     |
+| `bat`                    | `cat` with syntax highlighting       |
 
-Prerequisites: git, wget, gnupg, ca-certificates, lsb-release, tar, and `acl` (xtree's `-A` option needs it). On RHEL/Rocky/Alma, **EPEL** is turned on automatically. On Arch, the script runs `pacman -Syu`, because Arch doesn't support partial upgrades.
-See [`packages/package_list.txt`](packages/package_list.txt) for the package name each distro uses.
+Notes:
 
-Packages that fail to install only produce a warning. The installer keeps going.
+- If `eza` is not in your distro's repos, it comes from the official eza
+  apt repo or a GitHub release binary.
+- If `fastfetch` is not in your repos, it comes from the official GitHub
+  `.deb`, `.rpm` or tarball.
+- On Debian/Ubuntu, `bat` is also linked from `batcat`.
+- Prerequisites: git, wget, gnupg, ca-certificates, lsb-release, tar and
+  `acl` (needed by `xtree -A`).
+- RHEL/Rocky/Alma: **EPEL** is turned on automatically.
+- Arch: the script runs `pacman -Syu`, because Arch doesn't support
+  partial upgrades.
+- A package that fails to install only gives a warning; the installer
+  keeps going.
+- Package names for each distro: see
+  [`packages/package_list.txt`](packages/package_list.txt).
+
 
 ## ⚙️ What it configures
 
-- **`xtree`**: [`scripts/xtree.sh`](scripts/xtree.sh) is installed to `/usr/local/bin/xtree`, with a symlink at `~/xtree`. It's a tree view with color themes (`-s default|alternative|christmas|halloween`, `-r` for a random theme), permissions, owner, dates, ACLs and CSV export.
-- **`~/.bashrc`**: a block between `# dotfiles-nixish BEGIN` and `# dotfiles-nixish END` containing:
-  - History: `HISTCONTROL=ignoreboth:erasedups`, `histappend`, 10000 entries, timestamps (`%m/%d/%y %T`), and `LC_TIME=en_US.UTF-8` (the locale is generated if it's missing)
-  - Aliases: `l` and `ll` (eza, falling back to exa, then ls), `la`, `cowsays`, `xtree`, and `bat` on Debian
-  - A greeting in every interactive shell: `fastfetch` with a `fortune | cowsay` logo 🐄
-- **`~/.zshrc`** (only if zsh is installed): the same settings in zsh syntax (`setopt APPEND_HISTORY`, `SAVEHIST`, and so on)
-- Before an rc file is changed, a backup is saved as `*.dotfiles-nixish.bak.<timestamp>`.
-- **Every setting exists only once.** Lines outside the block that set something the block sets again (e.g. Ubuntu's stock `HISTSIZE=1000`, `HISTCONTROL=ignoreboth`, `alias ll='ls -alF'`) are removed and listed in the installer output. Only simple top-level one-line statements are touched. Lines inside `if`/`case` blocks, `PATH` and `HISTFILE` are left alone. If the result would not pass `bash -n`/`zsh -n`, the file is left unchanged. The originals stay in the `.bak` file.
+### xtree
+
+[`scripts/xtree.sh`](scripts/xtree.sh) is installed to
+`/usr/local/bin/xtree`, with a symlink at `~/xtree`.
+
+It's a tree view with:
+
+- color themes: `-s default|alternative|christmas|halloween`
+  (`-r` picks one at random)
+- permissions, owner, dates and ACLs
+- CSV export
+
+### ~/.bashrc
+
+A block between `# dotfiles-nixish BEGIN` and `# dotfiles-nixish END`:
+
+- **History:** `HISTCONTROL=ignoreboth:erasedups`, `histappend`,
+  10000 entries, timestamps (`%m/%d/%y %T`), `LC_TIME=en_US.UTF-8`
+  (the locale is generated if it's missing)
+- **Aliases:** `l` and `ll` (eza, falling back to exa, then ls), `la`,
+  `cowsays`, `xtree`, and `bat` on Debian
+- **Greeting:** every interactive shell shows `fastfetch` with a
+  `fortune | cowsay` logo 🐄
+
+### ~/.zshrc
+
+Only if zsh is installed. The same settings in zsh syntax
+(`setopt APPEND_HISTORY`, `SAVEHIST`, and so on).
+
+### Safety
+
+- Before an rc file is changed, a backup is saved as
+  `*.dotfiles-nixish.bak.<timestamp>`.
+- **Every setting exists only once.** Lines outside the block that set
+  something the block sets again are removed and listed in the output.
+  Examples: Ubuntu's stock `HISTSIZE=1000`, `HISTCONTROL=ignoreboth`,
+  `alias ll='ls -alF'`.
+- Only simple one-line statements at the top level are removed.
+  These are never touched:
+  - lines inside `if` / `case` blocks
+  - `PATH`
+  - `HISTFILE`
+- If the result would fail `bash -n` / `zsh -n`, the file is left
+  unchanged.
+
 
 ## ❄️ NixOS (with or without flakes)
 
-The same one-liner works on NixOS. NixOS already ships `curl`; the installer adds `git` itself. Packages go into **your user profile**, so no `nixos-rebuild` is needed. The installer picks the method automatically:
+The same one-liner works on NixOS. NixOS already ships `curl`, and the
+installer adds `git` itself.
 
-| Your setup | What the installer runs |
-|---|---|
-| Channels, no flakes (the default NixOS install) | `nix-env -f '<nixpkgs>' -iA eza duf ...` |
-| Flakes (no `<nixpkgs>` channel, or your profile is already a `nix profile` one) | `nix profile install nixpkgs#eza nixpkgs#duf ...` (with `--extra-experimental-features 'nix-command flakes'`, so you don't need flakes turned on in `nix.conf`) |
+Packages go into **your user profile**, so no `nixos-rebuild` is needed.
+The installer picks the method automatically:
 
-To choose the method yourself, add `--no-flakes` or `--flakes` to the one-liner. `xtree` still goes to `/usr/local/bin/xtree` with the `~/xtree` link, and the `~/.bashrc` / `~/.zshrc` block is the same as on other distros. On NixOS the installer doesn't change the system: no channel updates and no locale generation. `en_US.UTF-8` is the NixOS default locale. If you've removed it, add `i18n.supportedLocales = [ "en_US.UTF-8/UTF-8" ];` to your configuration.
+| Your setup         | What the installer runs                           |
+|--------------------|---------------------------------------------------|
+| Channels (default) | `nix-env -f '<nixpkgs>' -iA eza duf ...`          |
+| Flakes             | `nix profile install nixpkgs#eza nixpkgs#duf ...` |
+
+- "Flakes" is used when there is no `<nixpkgs>` channel, or when your
+  profile is already a `nix profile` one.
+- Flakes mode passes `--extra-experimental-features 'nix-command flakes'`,
+  so flakes don't need to be turned on in `nix.conf`.
+- To choose the method yourself, add `--no-flakes` or `--flakes`.
+- `xtree` and the `~/.bashrc` / `~/.zshrc` block are the same as on
+  other distros.
+- The installer doesn't change the system: no channel updates and no
+  locale generation.
+- `en_US.UTF-8` is the NixOS default locale. If you've removed it, add
+  this to your configuration:
+
+  ```nix
+  i18n.supportedLocales = [ "en_US.UTF-8/UTF-8" ];
+  ```
 
 ### Declarative option (configuration.nix)
 
-If you'd rather manage the tools through your NixOS configuration, the repo includes a NixOS module. Enabling it installs all the tools plus `xtree` system-wide.
+The repo includes a NixOS module. Enabling it installs all the tools plus
+`xtree` system-wide.
 
-**Without flakes**: in `/etc/nixos/configuration.nix`:
+**Without flakes:** in `/etc/nixos/configuration.nix`
 
 ```nix
 {
@@ -72,11 +154,12 @@ If you'd rather manage the tools through your NixOS configuration, the repo incl
     "${builtins.fetchTarball "https://github.com/entropytwo-ai/dotfiles-nixish/archive/main.tar.gz"}/nix/module.nix"
   ];
   programs.dotfiles-nixish.enable = true;
-  # programs.dotfiles-nixish.shellConfig = true;  # also apply the bash/zsh block system-wide
+  # also apply the bash/zsh block system-wide:
+  # programs.dotfiles-nixish.shellConfig = true;
 }
 ```
 
-**With flakes**: in `/etc/nixos/flake.nix`:
+**With flakes:** in `/etc/nixos/flake.nix`
 
 ```nix
 {
@@ -97,16 +180,27 @@ If you'd rather manage the tools through your NixOS configuration, the repo incl
 }
 ```
 
-Then run `sudo nixos-rebuild switch`. After that, either run the one-liner with `--no-packages`, which only adds the shell block and the `/usr/local/bin/xtree` link, or set `shellConfig = true` and skip the installer entirely. Don't do both, or the greeting will show twice.
+Then run `sudo nixos-rebuild switch`. After that, pick **one** of:
 
-**Just the tools, no config**:
+1. Run the one-liner with `--no-packages` (adds only the shell block and
+   the `/usr/local/bin/xtree` link), **or**
+2. Set `shellConfig = true` and skip the installer.
+
+Don't do both, or the greeting shows twice.
+
+**Just the tools, no config:**
 
 ```bash
-nix-env -if https://github.com/entropytwo-ai/dotfiles-nixish/archive/main.tar.gz   # no flakes
-nix profile install github:entropytwo-ai/dotfiles-nixish                           # flakes
+# no flakes
+nix-env -if https://github.com/entropytwo-ai/dotfiles-nixish/archive/main.tar.gz
+# flakes
+nix profile install github:entropytwo-ai/dotfiles-nixish
 ```
 
-> 💡 For zsh as your login shell on NixOS, use `programs.zsh.enable = true;` and `users.users.<you>.shell = pkgs.zsh;`. A zsh installed into your user profile isn't listed in `/etc/shells`, so it can't be set as your login shell.
+> 💡 **zsh as your NixOS login shell:** use `programs.zsh.enable = true;`
+> and `users.users.<you>.shell = pkgs.zsh;`. A zsh installed into your
+> user profile isn't in `/etc/shells`, so it can't be your login shell.
+
 
 ## 🔄 Updating
 
@@ -114,41 +208,70 @@ nix profile install github:entropytwo-ai/dotfiles-nixish                        
 git -C ~/.dotfiles-nixish pull && bash ~/.dotfiles-nixish/install.sh
 ```
 
-Running the one-liner again does the same thing. The managed block is **replaced in place**, never duplicated. Put your own customizations outside the BEGIN/END markers.
+Running the one-liner again does the same thing. The managed block is
+**replaced in place**, never duplicated. Put your own customizations
+outside the BEGIN/END markers.
 
-### Only the files your OS needs
 
-After detecting the OS, the installer keeps only the repo files that OS uses in `~/.dotfiles-nixish`:
+## ✂️ Only the files your OS needs
 
-| Detected OS | Removed from the local copy |
-|---|---|
-| Any distro except NixOS | `flake.nix`, `flake.lock`, `default.nix`, `nix/` |
-| NixOS | `packages/` (the apt/dnf/pacman/... name list) |
+After detecting the OS, the installer removes the repo files that OS
+doesn't use from `~/.dotfiles-nixish`, and says so in its output:
 
-In a git checkout this uses git **sparse-checkout**: the files disappear from disk, but `git status` stays clean and `git pull` keeps working. Updates to the removed files stay hidden. If you've edited a file that would be removed, the installer leaves everything alone and warns you. Copies without git (direct download, unzipped folder) only download the files they need, or have the extra ones deleted. A copy inside another git repo is never touched. To get everything back, re-run with `--keep-all`.
+| Detected OS     | Removed as unnecessary                           |
+|-----------------|--------------------------------------------------|
+| Not NixOS       | `flake.nix`, `flake.lock`, `default.nix`, `nix/` |
+| NixOS           | `packages/` (the apt/dnf/pacman name list)       |
+
+How it's done:
+
+- **Git checkout (the normal case):** git sparse-checkout. The files
+  leave the disk, `git status` stays clean and `git pull` keeps working.
+- **No git (direct download):** the unneeded files are never downloaded.
+- **Unzipped copy:** the unneeded files are deleted.
+- **You edited a file that would be removed:** nothing is removed, and
+  you get a warning.
+- **Copy inside another git repo:** never touched.
+
+To get every file back, re-run with `--keep-all`. GitHub always keeps the
+full repo.
+
 
 ## 🧩 Manual / partial use
 
 ```bash
 git clone https://github.com/entropytwo-ai/dotfiles-nixish.git ~/.dotfiles-nixish
-source ~/.dotfiles-nixish/config/bashrc_append.sh     # just try the config in this shell
-source ~/.dotfiles-nixish/config/zshrc_append.sh      # zsh flavor
-sudo install -m 755 ~/.dotfiles-nixish/scripts/xtree.sh /usr/local/bin/xtree   # just xtree
+
+# just try the config in this shell
+source ~/.dotfiles-nixish/config/bashrc_append.sh
+source ~/.dotfiles-nixish/config/zshrc_append.sh     # zsh flavor
+
+# just xtree
+sudo install -m 755 ~/.dotfiles-nixish/scripts/xtree.sh /usr/local/bin/xtree
 ```
+
 
 ## 🗂 Layout
 
-Files marked [nixos] are removed from your local copy on other distros; [distro] files are removed on NixOS.
+`[nixos]` files are removed locally on other distros.
+`[distro]` files are removed locally on NixOS.
 
 ```
-install.sh                 # the bootstrap script
-scripts/xtree.sh           # xtree
-config/bashrc_append.sh    # ~/.bashrc block
-config/zshrc_append.sh     # ~/.zshrc block
-packages/package_list.txt  # package names for each distro           [distro]
-flake.nix / flake.lock     # flake: nixosModules.default + packages   [nixos]
-default.nix                # non-flake entry point (nix-env -if)      [nixos]
-nix/module.nix             # NixOS module (programs.dotfiles-nixish.*) [nixos]
-nix/packages.nix           # tool list as nixpkgs attributes          [nixos]
-nix/xtree.nix              # xtree as a Nix package                   [nixos]
+install.sh                  the bootstrap script
+scripts/xtree.sh            xtree
+config/bashrc_append.sh     ~/.bashrc block
+config/zshrc_append.sh      ~/.zshrc block
+packages/package_list.txt   package names per distro       [distro]
+flake.nix, flake.lock       flake: NixOS module + packages [nixos]
+default.nix                 entry point without flakes     [nixos]
+nix/module.nix              NixOS module                   [nixos]
+nix/packages.nix            tool list (nixpkgs names)      [nixos]
+nix/xtree.nix               xtree as a Nix package         [nixos]
 ```
+
+
+[badge-bash]: https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white
+[badge-zsh]: https://img.shields.io/badge/bonus-zsh-F15A24?logo=zsh&logoColor=white
+[badge-distros]: https://img.shields.io/badge/distros-Debian%20%7C%20Ubuntu%20%7C%20Fedora%20%7C%20RHEL%20%7C%20Arch%20%7C%20openSUSE%20%7C%20Alpine%20%7C%20NixOS-blue
+[badge-nixos]: https://img.shields.io/badge/NixOS-flakes%20%26%20no%20flakes-5277C3?logo=nixos&logoColor=white
+[badge-safe]: https://img.shields.io/badge/re--run-safe-success

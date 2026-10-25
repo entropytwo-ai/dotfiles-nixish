@@ -33,6 +33,7 @@ TS="$(date +%Y%m%d-%H%M%S)"
 OPT_ZSH=false
 OPT_PACKAGES=true
 OPT_KEEP_ALL=false
+DIRECT_DL=false
 NIX_MODE=""        # "env" (channels, no flakes) or "profile" (flakes); auto-detected if empty
 for arg in "$@"; do
     case "$arg" in
@@ -420,6 +421,7 @@ else
         chmod +x "$SRC_DIR/install.sh" "$SRC_DIR/scripts/xtree.sh"
         [[ $EUID -eq 0 && "$TARGET_USER" != "root" ]] && chown -R "$TARGET_USER:$TARGET_GROUP" "$SRC_DIR"
         ok "Downloaded into $SRC_DIR"
+        DIRECT_DL=true
     fi
 fi
 [[ -f "$SRC_DIR/scripts/xtree.sh" ]] || die "scripts/xtree.sh missing in $SRC_DIR"
@@ -434,9 +436,43 @@ fi
 # brings everything back. Plain (non-git) copies just have the files deleted.
 NIX_ONLY=(flake.nix flake.lock default.nix nix)
 NON_NIX_ONLY=(packages)
-if $IS_NIXOS; then UNNEEDED=("${NON_NIX_ONLY[@]}"); OS_KIND="NixOS"
-else UNNEEDED=("${NIX_ONLY[@]}"); OS_KIND="$OS_NAME (not NixOS)"; fi
+if $IS_NIXOS; then UNNEEDED=("${NON_NIX_ONLY[@]}"); OS_KIND="NixOS"; KIND="non-NixOS"
+else UNNEEDED=("${NIX_ONLY[@]}"); OS_KIND="$OS_NAME"; KIND="NixOS-only"; fi
 SPARSE_TAG="# dotfiles-nixish: sparse-checkout managed by install.sh"
+TRIM_NOTE=""       # one-line result, repeated in the Summary
+
+what_is() {  # what each OS-specific path is for
+    case "$1" in
+        flake.nix)   echo "Nix flake (NixOS module + packages)" ;;
+        flake.lock)  echo "version pins for the flake" ;;
+        default.nix) echo "Nix entry point without flakes" ;;
+        nix)         echo "NixOS module and Nix package definitions" ;;
+        packages)    echo "package names for apt/dnf/pacman/zypper/apk" ;;
+        *)           echo "" ;;
+    esac
+}
+plural() { (( $1 == 1 )) && printf '%d %s' "$1" "$2" || printf '%d %ss' "$1" "$2"; }
+
+# print the list of paths about to be removed; sets TRIM_FILES (file count)
+list_unneeded() {  # list_unneeded git|plain <path>...
+    local mode="$1" p n name; shift
+    TRIM_FILES=0
+    sub "Removing ${KIND} files - they are unnecessary on ${OS_KIND}:"
+    for p in "$@"; do
+        if [[ "$mode" == git ]]; then n=$(as_target git -C "$SRC_DIR" ls-files -- "$p" | wc -l)
+        else n=$(find "$SRC_DIR/$p" -type f 2>/dev/null | wc -l); fi
+        TRIM_FILES=$(( TRIM_FILES + n ))
+        name="$p"; [[ -d "$SRC_DIR/$p" || "$n" -gt 1 ]] && name="$p/ ($(plural "$n" file))"
+        printf '       %s-%s %-20s %s%s%s\n' "$C_Y" "$C_0" "$name" "$C_C" "$(what_is "$p")" "$C_0"
+    done
+}
+
+# final status line for a completed removal
+report_trim() {  # report_trim <how>
+    TRIM_NOTE="$(plural "$TRIM_FILES" "${KIND} file") removed as unnecessary on ${OS_KIND}"
+    ok "${TRIM_NOTE}"
+    sub "$1"
+}
 
 trim_git() {
     local spf cur top=() p pats dirty
@@ -463,12 +499,16 @@ trim_git() {
     for p in "${UNNEEDED[@]}"; do
         [[ -n "$(as_target git -C "$SRC_DIR" ls-files -- "$p" 2>/dev/null)" ]] && top+=("$p")
     done
-    if [[ ${#top[@]} -eq 0 ]]; then ok "Nothing to remove - repo already holds only what $OS_KIND needs"; return 0; fi
+    if [[ ${#top[@]} -eq 0 ]]; then ok "No ${KIND} files in this copy - nothing unnecessary to remove"; return 0; fi
     local present=false
     for p in "${top[@]}"; do [[ -e "$SRC_DIR/$p" ]] && present=true; done
     if [[ "$cur" == "true" ]] && ! $present; then
         as_target git -C "$SRC_DIR" read-tree -mu HEAD 2>/dev/null   # re-apply after a pull, just in case
-        ok "Already trimmed - not present (hidden via sparse-checkout): ${top[*]}"
+        TRIM_NOTE="${KIND} files (${top[*]}) are not on disk - unnecessary on ${OS_KIND}"
+        ok "${KIND} files already removed - unnecessary on ${OS_KIND}"
+        local shown=()
+        for p in "${top[@]}"; do case "$p" in nix|packages) shown+=("$p/") ;; *) shown+=("$p") ;; esac; done
+        sub "Not on disk: ${shown[*]}"
         return 0
     fi
     dirty="$(as_target git -C "$SRC_DIR" status --porcelain -- "${top[@]}" 2>/dev/null)"
@@ -477,6 +517,7 @@ trim_git() {
         printf '%s\n' "$dirty" | sed 's/^/        /'
         return 0
     fi
+    list_unneeded git "${top[@]}"
     pats="$SPARSE_TAG"$'\n'"# hidden on $OS_KIND (re-run install.sh --keep-all to restore)"$'\n/*'
     for p in "${top[@]}"; do
         if [[ -d "$SRC_DIR/$p" ]] || as_target git -C "$SRC_DIR" ls-files -- "$p/" | grep -q .; then pats+=$'\n'"!/$p/"
@@ -491,40 +532,32 @@ trim_git() {
         as_target git -C "$SRC_DIR" config core.sparseCheckout false 2>/dev/null
         return 0
     fi
-    report_removed "${top[@]}"
+    for p in "${top[@]}"; do
+        [[ -e "$SRC_DIR/$p" ]] && { warn "$p is still present after sparse-checkout - left as-is."; return 0; }
+    done
+    report_trim "Hidden with git sparse-checkout: git status stays clean; --keep-all brings them back"
 }
 
 trim_plain() {
     local p found=()
     if $OPT_KEEP_ALL; then ok "--keep-all: keeping every repo file"; return 0; fi
     for p in "${UNNEEDED[@]}"; do [[ -e "$SRC_DIR/$p" ]] && found+=("$p"); done
-    if [[ ${#found[@]} -eq 0 ]]; then ok "Nothing to remove - folder already holds only what $OS_KIND needs"; return 0; fi
-    report_removed "${found[@]}" pre
-    for p in "${found[@]}"; do rm -rf "${SRC_DIR:?}/$p"; done
-    ok "Removed ${#found[@]} item(s) not needed on $OS_KIND"
-}
-
-report_removed() {  # report_removed <path>... [pre]
-    local p n=0 last="${*: -1}" items=("$@")
-    [[ "$last" == "pre" ]] && unset 'items[-1]'
-    sub "Removing files not needed on $OS_KIND:"
-    for p in "${items[@]}"; do
-        if [[ "$last" == "pre" ]]; then
-            if [[ -d "$SRC_DIR/$p" ]]; then n=$(find "$SRC_DIR/$p" -type f | wc -l); printf '       %s-%s %s/  %s(%d file%s)%s\n' "$C_Y" "$C_0" "$p" "$C_C" "$n" "$( (( n == 1 )) || echo s)" "$C_0"
-            else printf '       %s-%s %s\n' "$C_Y" "$C_0" "$p"; fi
+    if [[ ${#found[@]} -eq 0 ]]; then
+        if $DIRECT_DL; then
+            TRIM_NOTE="${KIND} files were never downloaded - unnecessary on ${OS_KIND}"
+            ok "${KIND} files were not downloaded - they are unnecessary on ${OS_KIND}"
         else
-            n=$(as_target git -C "$SRC_DIR" ls-files -- "$p" | wc -l)
-            if [[ -e "$SRC_DIR/$p" ]]; then printf '       %s✖%s %s %s(still present!)%s\n' "$C_R" "$C_0" "$p" "$C_Y" "$C_0"
-            elif (( n > 1 )) || as_target git -C "$SRC_DIR" ls-files -- "$p/" | grep -q .; then printf '       %s-%s %s/  %s(%d file%s)%s\n' "$C_Y" "$C_0" "$p" "$C_C" "$n" "$( (( n == 1 )) || echo s)" "$C_0"
-            else printf '       %s-%s %s\n' "$C_Y" "$C_0" "$p"; fi
+            ok "No ${KIND} files in this folder - nothing unnecessary to remove"
         fi
-    done
-    [[ "$last" == "pre" ]] && return 0
-    ok "Hidden via git sparse-checkout (git status stays clean; --keep-all restores them)"
+        return 0
+    fi
+    list_unneeded plain "${found[@]}"
+    for p in "${found[@]}"; do rm -rf "${SRC_DIR:?}/$p"; done
+    report_trim "Deleted from this folder; they are still on GitHub if you ever need them"
 }
 
 step "Keeping only the repo files needed on ${OS_NAME}"
-sub "Detected $OS_KIND - $($IS_NIXOS && echo "keeping the Nix files, dropping the other-distro package list" || echo "keeping the distro files, dropping the NixOS/Nix files")"
+sub "Detected $($IS_NIXOS && echo "NixOS - the apt/dnf/pacman package list is not needed" || echo "$OS_NAME (not NixOS) - the NixOS/Nix files are not needed")"
 if [[ -e "$SRC_DIR/.git" ]] && ! have git; then
     info "$(disp "$SRC_DIR") is a git checkout but git is not installed - leaving its files alone."
 elif have git && [[ -d "$SRC_DIR/.git" || -f "$SRC_DIR/.git" ]] \
@@ -829,6 +862,8 @@ for t in "${TOOLS[@]}" xtree; do
     if have "$c" || [[ -x "$c" ]]; then printf '   %s✔%s %s\n' "$C_G" "$C_0" "$t"
     else printf '   %s✖%s %s %s(missing)%s\n' "$C_R" "$C_0" "$t" "$C_Y" "$C_0"; fi
 done
+
+[[ -n "$TRIM_NOTE" ]] && printf '\n   %sℹ%s %s\n' "$C_C" "$C_0" "$TRIM_NOTE"
 
 if [[ ${#WARNINGS[@]} -gt 0 ]]; then
     printf '\n%sWarnings:%s\n' "$C_Y" "$C_0"
