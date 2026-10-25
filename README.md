@@ -14,7 +14,7 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh)
 ```
 
-Options: `--zsh` also installs zsh and configures `~/.zshrc`. `--no-packages` sets up only the config and xtree.
+Options: `--zsh` also installs zsh and configures `~/.zshrc`. `--no-packages` sets up only the config and xtree. `--keep-all` keeps every repo file (see below).
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) --zsh
@@ -116,6 +116,17 @@ git -C ~/.dotfiles-nixish pull && bash ~/.dotfiles-nixish/install.sh
 
 Running the one-liner again does the same thing. The managed block is **replaced in place**, never duplicated. Put your own customizations outside the BEGIN/END markers.
 
+### Only the files your OS needs
+
+After detecting the OS, the installer keeps only the repo files that OS uses in `~/.dotfiles-nixish`:
+
+| Detected OS | Removed from the local copy |
+|---|---|
+| Any distro except NixOS | `flake.nix`, `flake.lock`, `default.nix`, `nix/` |
+| NixOS | `packages/` (the apt/dnf/pacman/... name list) |
+
+In a git checkout this uses git **sparse-checkout**: the files disappear from disk, but `git status` stays clean and `git pull` keeps working. Updates to the removed files stay hidden. If you've edited a file that would be removed, the installer leaves everything alone and warns you. Copies without git (direct download, unzipped folder) only download the files they need, or have the extra ones deleted. A copy inside another git repo is never touched. To get everything back, re-run with `--keep-all`.
+
 ## 🧩 Manual / partial use
 
 ```bash
@@ -127,15 +138,17 @@ sudo install -m 755 ~/.dotfiles-nixish/scripts/xtree.sh /usr/local/bin/xtree   #
 
 ## 🗂 Layout
 
+Files marked [nixos] are removed from your local copy on other distros; [distro] files are removed on NixOS.
+
 ```
 install.sh                 # the bootstrap script
 scripts/xtree.sh           # xtree
 config/bashrc_append.sh    # ~/.bashrc block
 config/zshrc_append.sh     # ~/.zshrc block
-packages/package_list.txt  # package names for each distro
-flake.nix / flake.lock     # flake: nixosModules.default + packages (default, xtree)
-default.nix                # non-flake entry point (nix-env -if / nix-shell)
-nix/module.nix             # NixOS module (programs.dotfiles-nixish.*)
-nix/packages.nix           # tool list as nixpkgs attributes
-nix/xtree.nix              # xtree as a Nix package
+packages/package_list.txt  # package names for each distro           [distro]
+flake.nix / flake.lock     # flake: nixosModules.default + packages   [nixos]
+default.nix                # non-flake entry point (nix-env -if)      [nixos]
+nix/module.nix             # NixOS module (programs.dotfiles-nixish.*) [nixos]
+nix/packages.nix           # tool list as nixpkgs attributes          [nixos]
+nix/xtree.nix              # xtree as a Nix package                   [nixos]
 ```

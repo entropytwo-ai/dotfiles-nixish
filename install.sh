@@ -16,6 +16,7 @@
 #    --no-packages    skip package installation (config + xtree only)
 #    --flakes         NixOS: force `nix profile install nixpkgs#...`
 #    --no-flakes      NixOS: force `nix-env -iA` with channels
+#    --keep-all       keep every repo file (default: only what this OS needs)
 #    -h, --help       show help
 #  Env overrides: DOTFILES_REPO, DOTFILES_BRANCH, DOTFILES_DIR, DOTFILES_PM
 # =============================================================================
@@ -31,6 +32,7 @@ TS="$(date +%Y%m%d-%H%M%S)"
 
 OPT_ZSH=false
 OPT_PACKAGES=true
+OPT_KEEP_ALL=false
 NIX_MODE=""        # "env" (channels, no flakes) or "profile" (flakes); auto-detected if empty
 for arg in "$@"; do
     case "$arg" in
@@ -38,7 +40,8 @@ for arg in "$@"; do
         --no-packages) OPT_PACKAGES=false ;;
         --flakes) NIX_MODE=profile ;;
         --no-flakes) NIX_MODE="env" ;;
-        -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'
+        --keep-all) OPT_KEEP_ALL=true ;;
+        -h|--help) sed -n '2,23p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'
                    echo "See https://github.com/entropytwo-ai/dotfiles-nixish"; exit 0 ;;
         *) echo "Unknown option: $arg (try --help)" >&2; exit 2 ;;
     esac
@@ -56,6 +59,13 @@ ok()   { printf '   %s✔%s %s\n' "$C_G" "$C_0" "$*"; }
 warn() { printf '   %s⚠ %s%s\n' "$C_Y" "$*" "$C_0"; WARNINGS+=("$*"); }
 die()  { printf '%s✖ %s%s\n' "$C_R" "$*" "$C_0" >&2; exit 1; }
 WARNINGS=()
+
+# --- progress output helpers for dotfile/repo edits
+disp()  { local p="$1"; [[ "$p" == "$TARGET_HOME"/* ]] && p="~${p#"$TARGET_HOME"}"; printf '%s' "$p"; }
+sub()   { printf '   %s→%s %s\n' "$C_C" "$C_0" "$*"; }
+short() { local s="$1" n="${2:-46}"; (( ${#s} > n )) && s="${s:0:n-1}…"; printf '%s' "$s"; }
+ltrim() { local s="$1"; printf '%s' "${s#"${s%%[![:space:]]*}"}"; }
+
 
 have() { command -v "$1" >/dev/null 2>&1; }
 # cowsay/fortune live in /usr/games on Debian/Ubuntu
@@ -398,8 +408,13 @@ else
         ok "Cloned into $SRC_DIR"
     else
         info "git unavailable (or $SRC_DIR is not a git checkout) - downloading files directly..."
-        mkdir -p "$SRC_DIR/scripts" "$SRC_DIR/config" "$SRC_DIR/packages"
-        for f in install.sh scripts/xtree.sh config/bashrc_append.sh config/zshrc_append.sh packages/package_list.txt; do
+        mkdir -p "$SRC_DIR/scripts" "$SRC_DIR/config"
+        DL=(install.sh scripts/xtree.sh config/bashrc_append.sh config/zshrc_append.sh)
+        # only fetch the files this OS needs (see "Trimming" below)
+        if $IS_NIXOS || $OPT_KEEP_ALL; then DL+=(flake.nix flake.lock default.nix nix/module.nix nix/packages.nix nix/xtree.nix); fi
+        if ! $IS_NIXOS || $OPT_KEEP_ALL; then DL+=(packages/package_list.txt); fi
+        for f in "${DL[@]}"; do
+            mkdir -p "$SRC_DIR/$(dirname "$f")"
             fetch "$RAW_BASE/$f" "$SRC_DIR/$f" || die "Failed to download $f from $RAW_BASE"
         done
         chmod +x "$SRC_DIR/install.sh" "$SRC_DIR/scripts/xtree.sh"
@@ -408,6 +423,118 @@ else
     fi
 fi
 [[ -f "$SRC_DIR/scripts/xtree.sh" ]] || die "scripts/xtree.sh missing in $SRC_DIR"
+
+# =============================================================================
+#  2b. Keep only the repo files this OS needs
+# =============================================================================
+# NixOS-only : flake.nix flake.lock default.nix nix/   (declarative Nix install)
+# other OSes : packages/package_list.txt               (apt/dnf/pacman/... names)
+# Git checkouts are trimmed with sparse-checkout: the files leave the working
+# tree, `git status` stays clean, `git pull` keeps working and --keep-all
+# brings everything back. Plain (non-git) copies just have the files deleted.
+NIX_ONLY=(flake.nix flake.lock default.nix nix)
+NON_NIX_ONLY=(packages)
+if $IS_NIXOS; then UNNEEDED=("${NON_NIX_ONLY[@]}"); OS_KIND="NixOS"
+else UNNEEDED=("${NIX_ONLY[@]}"); OS_KIND="$OS_NAME (not NixOS)"; fi
+SPARSE_TAG="# dotfiles-nixish: sparse-checkout managed by install.sh"
+
+trim_git() {
+    local spf cur top=() p pats dirty
+    spf="$(as_target git -C "$SRC_DIR" rev-parse --git-path info/sparse-checkout 2>/dev/null)" || return 1
+    [[ "$spf" == /* ]] || spf="$SRC_DIR/$spf"
+    cur="$(as_target git -C "$SRC_DIR" config --bool core.sparseCheckout 2>/dev/null || echo false)"
+    if [[ "$cur" == "true" ]] && ! grep -qxF "$SPARSE_TAG" "$spf" 2>/dev/null; then
+        info "$SRC_DIR already uses your own sparse-checkout setup - not touching it."
+        return 0
+    fi
+    if $OPT_KEEP_ALL; then
+        if [[ "$cur" == "true" ]]; then
+            sub "--keep-all: restoring every file in $(disp "$SRC_DIR")"
+            printf '%s\n/*\n' "$SPARSE_TAG" | as_target tee "$spf" >/dev/null
+            as_target git -C "$SRC_DIR" read-tree -mu HEAD \
+                && as_target git -C "$SRC_DIR" config core.sparseCheckout false \
+                && as_target rm -f "$spf" && ok "All repo files restored"
+        else
+            ok "--keep-all: keeping every repo file"
+        fi
+        return 0
+    fi
+    # only consider paths the repo actually tracks
+    for p in "${UNNEEDED[@]}"; do
+        [[ -n "$(as_target git -C "$SRC_DIR" ls-files -- "$p" 2>/dev/null)" ]] && top+=("$p")
+    done
+    if [[ ${#top[@]} -eq 0 ]]; then ok "Nothing to remove - repo already holds only what $OS_KIND needs"; return 0; fi
+    local present=false
+    for p in "${top[@]}"; do [[ -e "$SRC_DIR/$p" ]] && present=true; done
+    if [[ "$cur" == "true" ]] && ! $present; then
+        as_target git -C "$SRC_DIR" read-tree -mu HEAD 2>/dev/null   # re-apply after a pull, just in case
+        ok "Already trimmed - not present (hidden via sparse-checkout): ${top[*]}"
+        return 0
+    fi
+    dirty="$(as_target git -C "$SRC_DIR" status --porcelain -- "${top[@]}" 2>/dev/null)"
+    if [[ -n "$dirty" ]]; then
+        warn "Not trimming $(disp "$SRC_DIR"): you have local changes in files it would remove:"
+        printf '%s\n' "$dirty" | sed 's/^/        /'
+        return 0
+    fi
+    pats="$SPARSE_TAG"$'\n'"# hidden on $OS_KIND (re-run install.sh --keep-all to restore)"$'\n/*'
+    for p in "${top[@]}"; do
+        if [[ -d "$SRC_DIR/$p" ]] || as_target git -C "$SRC_DIR" ls-files -- "$p/" | grep -q .; then pats+=$'\n'"!/$p/"
+        else pats+=$'\n'"!/$p"; fi
+    done
+    as_target mkdir -p "$(dirname "$spf")"
+    if ! printf '%s\n' "$pats" | as_target tee "$spf" >/dev/null \
+       || ! as_target git -C "$SRC_DIR" config core.sparseCheckoutCone false \
+       || ! as_target git -C "$SRC_DIR" config core.sparseCheckout true \
+       || ! as_target git -C "$SRC_DIR" read-tree -mu HEAD; then
+        warn "git sparse-checkout failed in $(disp "$SRC_DIR") - all files kept."
+        as_target git -C "$SRC_DIR" config core.sparseCheckout false 2>/dev/null
+        return 0
+    fi
+    report_removed "${top[@]}"
+}
+
+trim_plain() {
+    local p found=()
+    if $OPT_KEEP_ALL; then ok "--keep-all: keeping every repo file"; return 0; fi
+    for p in "${UNNEEDED[@]}"; do [[ -e "$SRC_DIR/$p" ]] && found+=("$p"); done
+    if [[ ${#found[@]} -eq 0 ]]; then ok "Nothing to remove - folder already holds only what $OS_KIND needs"; return 0; fi
+    report_removed "${found[@]}" pre
+    for p in "${found[@]}"; do rm -rf "${SRC_DIR:?}/$p"; done
+    ok "Removed ${#found[@]} item(s) not needed on $OS_KIND"
+}
+
+report_removed() {  # report_removed <path>... [pre]
+    local p n=0 last="${*: -1}" items=("$@")
+    [[ "$last" == "pre" ]] && unset 'items[-1]'
+    sub "Removing files not needed on $OS_KIND:"
+    for p in "${items[@]}"; do
+        if [[ "$last" == "pre" ]]; then
+            if [[ -d "$SRC_DIR/$p" ]]; then n=$(find "$SRC_DIR/$p" -type f | wc -l); printf '       %s-%s %s/  %s(%d file%s)%s\n' "$C_Y" "$C_0" "$p" "$C_C" "$n" "$( (( n == 1 )) || echo s)" "$C_0"
+            else printf '       %s-%s %s\n' "$C_Y" "$C_0" "$p"; fi
+        else
+            n=$(as_target git -C "$SRC_DIR" ls-files -- "$p" | wc -l)
+            if [[ -e "$SRC_DIR/$p" ]]; then printf '       %s✖%s %s %s(still present!)%s\n' "$C_R" "$C_0" "$p" "$C_Y" "$C_0"
+            elif (( n > 1 )) || as_target git -C "$SRC_DIR" ls-files -- "$p/" | grep -q .; then printf '       %s-%s %s/  %s(%d file%s)%s\n' "$C_Y" "$C_0" "$p" "$C_C" "$n" "$( (( n == 1 )) || echo s)" "$C_0"
+            else printf '       %s-%s %s\n' "$C_Y" "$C_0" "$p"; fi
+        fi
+    done
+    [[ "$last" == "pre" ]] && return 0
+    ok "Hidden via git sparse-checkout (git status stays clean; --keep-all restores them)"
+}
+
+step "Keeping only the repo files needed on ${OS_NAME}"
+sub "Detected $OS_KIND - $($IS_NIXOS && echo "keeping the Nix files, dropping the other-distro package list" || echo "keeping the distro files, dropping the NixOS/Nix files")"
+if [[ -e "$SRC_DIR/.git" ]] && ! have git; then
+    info "$(disp "$SRC_DIR") is a git checkout but git is not installed - leaving its files alone."
+elif have git && [[ -d "$SRC_DIR/.git" || -f "$SRC_DIR/.git" ]] \
+   && [[ "$(as_target git -C "$SRC_DIR" rev-parse --show-toplevel 2>/dev/null)" == "$(cd "$SRC_DIR" && pwd -P)" ]]; then
+    trim_git
+elif have git && as_target git -C "$SRC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    info "$(disp "$SRC_DIR") is inside another git repository - leaving its files alone."
+else
+    trim_plain
+fi
 
 # =============================================================================
 #  3. Packages
@@ -513,12 +640,6 @@ fi
 # top-level (column 0) one-line statements are touched - nothing inside if/case
 # blocks - and the result must still pass `bash -n`/`zsh -n`, otherwise nothing
 # is removed. The full original is kept in the timestamped .bak file.
-# --- progress output helpers for dotfile edits
-disp()  { local p="$1"; [[ "$p" == "$TARGET_HOME"/* ]] && p="~${p#"$TARGET_HOME"}"; printf '%s' "$p"; }
-sub()   { printf '   %s→%s %s\n' "$C_C" "$C_0" "$*"; }
-short() { local s="$1" n="${2:-46}"; (( ${#s} > n )) && s="${s:0:n-1}…"; printf '%s' "$s"; }
-ltrim() { local s="$1"; printf '%s' "${s#"${s%%[![:space:]]*}"}"; }
-
 # regex that matches any definition of the same setting as rc line $1
 setting_re() {
     local l k; l="$(ltrim "$1")"
