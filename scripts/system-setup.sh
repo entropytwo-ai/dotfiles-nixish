@@ -837,6 +837,16 @@ nixos_undo() {  # put /etc/nixos back exactly as it was before this run
     for f in /etc/nixos/configuration.nix "$NIX_SYS_FILE" "${NIX_STUBS[@]}"; do restore_backup "$f"; done
 }
 
+# switch-to-configuration exit 4 = activated, but some units failed (re)starting
+nixos_activated() {
+    grep -qE "switch-to-configuration[^']*switch' returned non-zero exit status 4|warning: the following units failed" "$1"
+}
+nixos_failed_units() {
+    { sed -n 's/.*the following units failed: *//p' "$1"
+      systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}'; } \
+        | tr ', ' '\n\n' | grep -v '^$' | awk '!seen[$0]++' | head -8 | paste -sd' ' -
+}
+
 NIX_STATE=""   # ok | failed | background | manual | dry ("" = nothing for NixOS)
 nixos_apply() {
     [[ ${#NIX_PARTS[@]} -gt 0 ]] || return 0
@@ -871,25 +881,41 @@ nixos_apply() {
         NIX_STATE=background; return 0
     fi
     sub "Running nixos-rebuild switch (this can take a few minutes)..."
-    local log=/var/log/dotfiles-nixish-rebuild.log
-    if sudo_ nixos-rebuild switch >"$WORKDIR/rebuild.log" 2>&1; then
+    local log=/var/log/dotfiles-nixish-rebuild.log rc=0 sys_before sys_after f
+    sys_before=$(readlink -f /run/current-system 2>/dev/null)
+    sudo_ nixos-rebuild switch >"$WORKDIR/rebuild.log" 2>&1 || rc=$?
+    sys_after=$(readlink -f /run/current-system 2>/dev/null)
+    [[ $rc -ne 0 ]] && { sudo_ cp "$WORKDIR/rebuild.log" "$log" 2>/dev/null || log="$WORKDIR/rebuild.log"; }
+    if [[ $rc -eq 0 ]]; then
         ok "nixos-rebuild switch finished"
         NIX_STATE=ok
+    elif [[ -n "$sys_after" && "$sys_after" != "$sys_before" ]] || nixos_activated "$WORKDIR/rebuild.log"; then
+        # Built and activated; switch-to-configuration only reports that some
+        # systemd units failed to (re)start (exit 4) - common in LXC/Incus
+        # containers. The settings ARE applied, so keep the config as is.
+        ok "nixos-rebuild built and activated the new configuration (it is also the boot default)"
+        warn "Some systemd units failed to start during the switch - usually container units, not these settings: $(nixos_failed_units "$WORKDIR/rebuild.log" | sed 's/^$/see the log/'). Check: systemctl --failed. Log: $log"
+        NIX_STATE=ok
     else
-        sudo_ cp "$WORKDIR/rebuild.log" "$log" 2>/dev/null || log="$WORKDIR/rebuild.log"
-        warn "nixos-rebuild failed - the running system was not changed. Not applied: $(nixos_not_applied). Full log: $log"
+        warn "nixos-rebuild failed to build - the running system was not changed. Not applied: $(nixos_not_applied). Full log: $log"
         sub "Errors:"
         { grep -E '^[[:space:]]*error:' "$WORKDIR/rebuild.log" || tail -3 "$WORKDIR/rebuild.log"; } \
             | sed 's/^[[:space:]]*//' | awk '!seen[$0]++' | head -5 | sed 's/^/        /'
         sub "Undoing the config edits"
-        nixos_undo
-        # tell the user whose problem it is: does their own config build without us?
+        # keep stubs for missing imports during the check: without them the old
+        # config fails for that reason alone, which says nothing about it
+        for f in /etc/nixos/configuration.nix "$NIX_SYS_FILE"; do restore_backup "$f"; done
         sub "Checking whether the configuration as it was before this run builds..."
         if sudo_ nixos-rebuild dry-build >"$WORKDIR/dry.log" 2>&1; then
             info "It does - so the new settings caused the failure. Please report it with $log"
         else
-            warn "Your NixOS configuration did not build before this run either - 'sudo nixos-rebuild switch' fails the same way. Fix it first, then re-run."
+            local dlog=/var/log/dotfiles-nixish-dry-build.log
+            sudo_ cp "$WORKDIR/dry.log" "$dlog" 2>/dev/null || dlog="$WORKDIR/dry.log"
+            warn "Your NixOS configuration did not build before this run either ('sudo nixos-rebuild dry-build' fails). Fix it first, then re-run. Log: $dlog"
+            { grep -E '^[[:space:]]*error:' "$WORKDIR/dry.log" || tail -3 "$WORKDIR/dry.log"; } \
+                | sed 's/^[[:space:]]*//' | awk '!seen[$0]++' | head -5 | sed 's/^/        /'
         fi
+        for f in "${NIX_STUBS[@]}"; do restore_backup "$f"; done
         return 1
     fi
     # verify what we asked for
