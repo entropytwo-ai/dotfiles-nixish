@@ -18,7 +18,7 @@
         xtree = pkgs.callPackage ./nix/xtree.nix { };
         default = pkgs.buildEnv {
           name = "dotfiles-nixish";
-          paths = (import ./nix/packages.nix pkgs) ++ [ xtree ];
+          paths = (import ./nix/packages.nix pkgs { }) ++ [ xtree ];
         };
       });
     };

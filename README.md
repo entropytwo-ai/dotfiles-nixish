@@ -30,17 +30,18 @@ See [System settings](#-system-settings) for doing the same with flags.
 
 Add options to the end of the one-liner:
 
-| Option          | What it does                                          |
-|-----------------|-------------------------------------------------------|
-| `--zsh`         | also install zsh and configure `~/.zshrc`             |
-| `--no-packages` | only set up the shell config and xtree                |
-| `--keep-all`    | keep every repo file, not just the ones your OS needs |
-| `--flakes`      | NixOS: force `nix profile install` (flakes)           |
-| `--no-flakes`   | NixOS: force `nix-env -iA` (channels)                 |
-| `--no-dotfiles` | skip the dotfiles (system settings only)              |
-| `--menu`        | always show the menu (`--no-menu`: never)             |
-| `--dry-run`     | show the system changes without making them           |
-| `-y`            | don't ask "Go ahead?"                                 |
+| Option             | What it does                                              |
+|--------------------|-----------------------------------------------------------|
+| `--zsh`            | also install zsh and configure `~/.zshrc`                 |
+| `--no-packages`    | only set up the shell config and xtree                    |
+| `--keep-all`       | keep every repo file, not just the ones your OS needs     |
+| `--package-list F` | use this package list (file or URL) instead of the repo's |
+| `--flakes`         | NixOS: force `nix profile install` (flakes)               |
+| `--no-flakes`      | NixOS: force `nix-env -iA` (channels)                     |
+| `--no-dotfiles`    | skip the dotfiles (system settings only)                  |
+| `--menu`           | always show the menu (`--no-menu`: never)                 |
+| `--dry-run`        | show the system changes without making them               |
+| `-y`               | don't ask "Go ahead?"                                     |
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) --zsh
@@ -129,8 +130,11 @@ Safety:
 | `ncdu`                   | disk usage browser                   |
 | `btop`, `glances`        | system monitors                      |
 | `fzf`                    | fuzzy finder                         |
-| `curl`                   | downloads / HTTP                     |
 | `bat`                    | `cat` with syntax highlighting       |
+
+This is the `[tools]` section of
+[`packages/package_list.txt`](packages/package_list.txt), the one package
+list used on every OS (see [Adding your own packages](#-adding-your-own-packages)).
 
 Notes:
 
@@ -139,15 +143,63 @@ Notes:
 - If `fastfetch` is not in your repos, it comes from the official GitHub
   `.deb`, `.rpm` or tarball.
 - On Debian/Ubuntu, `bat` is also linked from `batcat`.
-- Prerequisites: git, wget, gnupg, ca-certificates, lsb-release, tar and
-  `acl` (needed by `xtree -A`).
+- Prerequisites (`[prerequisites]` in the list): ca-certificates, curl,
+  wget, git, tar, gnupg, `acl` (needed by `xtree -A`) and lsb-release.
 - RHEL/Rocky/Alma: **EPEL** is turned on automatically.
 - Arch: the script runs `pacman -Syu`, because Arch doesn't support
   partial upgrades.
 - A package that fails to install only gives a warning; the installer
   keeps going.
-- Package names for each distro: see
-  [`packages/package_list.txt`](packages/package_list.txt).
+
+
+## ➕ Adding your own packages
+
+Every package the installer can install is in **one file**:
+[`packages/package_list.txt`](packages/package_list.txt). It covers
+the prerequisites, the tools, zsh, the SSH server, sudo and the locale
+package. It is used on **every OS**: apt, dnf/yum, pacman, zypper, apk
+and NixOS (installer, NixOS module, `default.nix` and flake).
+
+Add a line under `[tools]`:
+
+```
+[tools]
+...
+htop                                       # same name everywhere
+ripgrep  cmd=rg                            # the command differs from the name
+fd       cmd=fd,fdfind apt=fd-find dnf=fd-find
+```
+
+Line format: `name [apt= dnf= yum= pacman= zypper= apk= nix=] [cmd=] [path=]`
+
+| Part            | Meaning                                                             |
+|-----------------|---------------------------------------------------------------------|
+| `name`          | package name, also the command checked for "already installed"      |
+| `apt=`...`nix=` | the name for that package manager, if different (`yum` uses `dnf=`) |
+| `a,b`           | try `a`, then `b`                                                   |
+| `a+b`           | install `a` and `b` together                                        |
+| `-`             | skip on that package manager                                        |
+| `cmd=a,b`       | command(s) that prove it's installed                                |
+| `path=a,b`      | file(s) that prove it's installed                                   |
+| `# ...`         | comment                                                             |
+
+Sections: `[prerequisites]` (always), `[zsh]` (with `--zsh`), `[ssh]`
+(when SSH is enabled and no server is installed), `[sudo]` (when a user
+is created and sudo is missing), `[locale]` (when en_US.UTF-8 is missing)
+and `[tools]`. The NixOS module uses `[prerequisites]` and `[tools]`.
+
+A name that doesn't exist on your distro gets a warning and is skipped
+(shown as missing in the summary). The run carries on.
+
+Three ways to use your own list:
+
+- **Edit your checkout:** `~/.dotfiles-nixish/packages/package_list.txt`,
+  then re-run `bash ~/.dotfiles-nixish/install.sh`. The local list wins
+  over the downloaded one.
+- **Pass a list:** `... install.sh) --package-list ~/my_list.txt` (a file
+  or an `https://` URL).
+- **Fork the repo**, edit the list there, and point the one-liner at your
+  fork: `DOTFILES_REPO=https://github.com/you/dotfiles-nixish.git bash <(curl -fsSL https://raw.githubusercontent.com/you/dotfiles-nixish/main/install.sh)`.
 
 
 ## ⚙️ What it configures
@@ -307,7 +359,7 @@ doesn't use from `~/.dotfiles-nixish`, and says so in its output:
 | Detected OS     | Removed as unnecessary                           |
 |-----------------|--------------------------------------------------|
 | Not NixOS       | `flake.nix`, `flake.lock`, `default.nix`, `nix/` |
-| NixOS           | `packages/` (the apt/dnf/pacman name list)       |
+| NixOS           | nothing: every file is used (`packages/` too)    |
 
 How it's done:
 
@@ -339,8 +391,8 @@ sudo install -m 755 ~/.dotfiles-nixish/scripts/xtree.sh /usr/local/bin/xtree
 
 ## 🗂 Layout
 
-`[nixos]` files are removed locally on other distros.
-`[distro]` files are removed locally on NixOS.
+`[nixos]` files are removed locally on other distros. Everything else is
+used on every OS.
 
 ```
 install.sh                  the bootstrap script
@@ -348,12 +400,13 @@ scripts/xtree.sh            xtree
 scripts/system-setup.sh     user, SSH, hostname, IP, DNS
 config/bashrc_append.sh     ~/.bashrc block
 config/zshrc_append.sh      ~/.zshrc block
-packages/package_list.txt   package names per distro       [distro]
+packages/package_list.txt   THE package list (every OS)
 flake.nix, flake.lock       flake: NixOS module + packages [nixos]
 default.nix                 entry point without flakes     [nixos]
 nix/module.nix              NixOS module                   [nixos]
-nix/packages.nix            tool list (nixpkgs names)      [nixos]
+nix/packages.nix            reads the list for Nix         [nixos]
 nix/xtree.nix               xtree as a Nix package         [nixos]
+CHANGELOG.md                what each change added
 ```
 
 

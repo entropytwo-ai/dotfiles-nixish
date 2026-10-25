@@ -6,7 +6,7 @@ let
   xtree = pkgs.callPackage ./nix/xtree.nix { };
   env = pkgs.buildEnv {
     name = "dotfiles-nixish";
-    paths = (import ./nix/packages.nix pkgs) ++ [ xtree ];
+    paths = (import ./nix/packages.nix pkgs { }) ++ [ xtree ];
   };
 in
 env // {

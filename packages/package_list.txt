@@ -1,26 +1,68 @@
-# dotfiles-nixish package list (reference only - install.sh holds the real mapping)
+# dotfiles-nixish package list - the ONE list install.sh uses on every OS
+# (Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE, Alpine, NixOS) and that
+# nix/packages.nix reads for the NixOS module and the flake.
 #
-# logical    | apt (Debian/Ubuntu)        | dnf (Fedora/RHEL)  | pacman (Arch) | zypper (openSUSE) | apk (Alpine)
-# -----------+----------------------------+--------------------+---------------+-------------------+-------------
-eza          | eza  (or deb.gierens.de / GitHub binary fallback)   | eza (GitHub binary fallback) | eza | eza | eza
-duf          | duf                        | duf                | duf           | duf               | duf
-cowsay       | cowsay                     | cowsay             | cowsay        | cowsay            | cowsay
-fortune      | fortune-mod + fortunes-min + fortunes | fortune-mod        | fortune-mod   | fortune           | fortune
-fastfetch    | fastfetch (GitHub .deb fallback) | fastfetch (GitHub .rpm fallback) | fastfetch | fastfetch | fastfetch
-tldr         | tldr / tealdeer            | tldr / tealdeer    | tealdeer/tldr | tealdeer / tldr   | tealdeer
-nmap         | nmap                       | nmap               | nmap          | nmap              | nmap
-ncdu         | ncdu                       | ncdu               | ncdu          | ncdu              | ncdu
-btop         | btop                       | btop               | btop          | btop              | btop
-fzf          | fzf                        | fzf                | fzf           | fzf               | fzf
-glances      | glances                    | glances            | glances       | glances           | glances
-curl         | curl                       | curl               | curl          | curl              | curl
-bat          | bat (binary: batcat)       | bat                | bat           | bat               | bat
+# ADD YOUR OWN PACKAGES at the end, under [tools] - one per line.
+#
+# Line format:   name   [key=value ...]
+#   name         the package name; also the command used to check whether
+#                it is already installed
+#   apt= dnf= yum= pacman= zypper= apk= nix=
+#                package name(s) for that package manager when they differ
+#                from "name" (yum falls back to dnf=):
+#                  a,b   try a, then b (first that installs wins)
+#                  a+b   install a and b together
+#                  -     not needed / skip on that package manager
+#   cmd=a,b      command(s) proving it is installed (any one is enough);
+#                without cmd= a command named like "name" or the installed
+#                package counts
+#   path=a,b     file(s) proving it is installed (for packages without a command)
+#
+# Sections:
+#   [prerequisites]  always, before the rest (download + git helpers)
+#   [zsh]            only with --zsh
+#   [ssh]            only for "Enable SSH" when no SSH server is installed
+#   [sudo]           only for "Create a user" when sudo is missing
+#   [locale]         only when the en_US.UTF-8 locale is missing
+#   [tools]          the tool set - the "Dotfiles" menu item
+# Unknown packages are skipped with a warning; the run goes on.
 
-# NixOS (nix-env -iA / nix profile install nixpkgs#...): same names as the first
-# column, except fortune -> fortune, tldr -> tldr (fallback tealdeer),
-# gpg -> gnupg, tar -> gnutar, lsb -> lsb-release. See nix/packages.nix.
+[prerequisites]
+certs      path=/etc/ssl/certs/ca-certificates.crt,/etc/pki/tls/certs/ca-bundle.crt,/etc/ssl/certs  apt=ca-certificates dnf=ca-certificates pacman=ca-certificates zypper=ca-certificates apk=ca-certificates nix=cacert
+curl
+wget
+git
+tar        nix=gnutar
+gpg        apt=gnupg dnf=gnupg2,gnupg pacman=gnupg zypper=gpg2,gnupg apk=gnupg nix=gnupg
+acl        cmd=getfacl
+lsb        cmd=lsb_release apt=lsb-release dnf=redhat-lsb-core,lsb_release pacman=lsb-release zypper=lsb-release apk=lsb-release-minimal,lsb-release nix=lsb-release
 
-# prerequisites / helpers
-git wget gpg (gnupg) ca-certificates lsb-release acl (getfacl for xtree -A) tar
-zsh is NOT installed automatically - if it is present, ~/.zshrc gets configured too.
-# extra repo: EPEL is enabled automatically on RHEL/Rocky/Alma/CentOS Stream
+[zsh]
+zsh
+
+[ssh]
+openssh    cmd=sshd apt=openssh-server dnf=openssh-server zypper=openssh-server,openssh pacman=openssh apk=openssh-server+openssh nix=-
+
+[sudo]
+sudo       nix=-
+
+[locale]
+locales    cmd=- apt=locales dnf=glibc-langpack-en,glibc-locale-source zypper=glibc-locale pacman=- apk=- nix=-
+
+[tools]
+eza                      # falls back to the eza apt repo / GitHub binary
+duf
+cowsay
+fortune    apt=fortune-mod+fortunes-min dnf=fortune-mod pacman=fortune-mod zypper=fortune apk=fortune nix=fortune
+fastfetch                # falls back to the GitHub .deb / .rpm / tarball
+tldr       apt=tldr,tealdeer dnf=tldr,tealdeer pacman=tealdeer,tldr zypper=tealdeer,tldr apk=tealdeer,tldr nix=tldr,tealdeer
+nmap
+ncdu
+btop
+fzf
+glances
+bat        cmd=bat,batcat
+# your packages, e.g.:
+# htop
+# ripgrep  cmd=rg
+# fd       cmd=fd,fdfind apt=fd-find dnf=fd-find

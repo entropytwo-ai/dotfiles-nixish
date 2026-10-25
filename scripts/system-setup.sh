@@ -165,6 +165,19 @@ sudoers_allows_group() {
     sudo_ sh -c "cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null" | grep -qE "^[[:space:]]*%$1[[:space:]]+ALL"
 }
 
+# package names for list entry $2 in section $1 (packages/package_list.txt);
+# $3 = built-in default when the list has no such entry
+pkg_names() {
+    if declare -F candidates >/dev/null && [[ " ${PKG_SEC[$1]:-} " == *" $2 "* ]]; then candidates "$2"
+    else printf '%s\n' "$3"; fi
+}
+pkg_install_names() {  # try each alternative in order; a+b = together
+    local c
+    # shellcheck disable=SC2086
+    for c in $1; do pm_install ${c//+/ } && return 0; done
+    return 1
+}
+
 setup_user() {
     local u="$NEW_USER" grp existed=false shell
     grp="$(admin_group)"
@@ -173,9 +186,12 @@ setup_user() {
 
     # 1. sudo itself (minimal images may not have it)
     if ! $IS_NIXOS && ! have sudo; then
-        if dry; then sub "[dry-run] would install: sudo"
-        elif pm_install sudo >/dev/null 2>&1; then ok "Installed sudo"
-        else warn "Could not install sudo - $u will not be able to use it"; fi
+        # package name(s) from [sudo] in packages/package_list.txt
+        local sp; sp="$(pkg_names sudo sudo sudo)"
+        if [[ -z "$sp" ]]; then sub "sudo: the package list says it is not needed with $PM"
+        elif dry; then sub "[dry-run] would install: ${sp// / or }"
+        elif pkg_install_names "$sp" >/dev/null 2>&1; then ok "Installed sudo"
+        else warn "Could not install sudo ($sp) - $u will not be able to use it"; fi
     fi
     getent group "$grp" >/dev/null 2>&1 || sys_run groupadd "$grp" 2>/dev/null || sys_run addgroup "$grp"
 
@@ -268,12 +284,12 @@ setup_ssh() {
     if ! sshd="$(sshd_bin)"; then
         sub "OpenSSH server not installed - installing it"
         pm_refresh
-        case "$PM" in
-            apt) pkg="openssh-server" ;; pacman) pkg="openssh" ;; apk) pkg="openssh-server openssh" ;;
-            *)   pkg="openssh-server openssh" ;;
-        esac
-        if dry; then sub "[dry-run] would install: ${pkg%% *}"
-        else for p in $pkg; do pm_install "$p" && break; done; fi
+        # package name(s) from [ssh] in packages/package_list.txt (built-in default if absent)
+        local def="openssh-server openssh"
+        case "$PM" in pacman) def="openssh" ;; apk) def="openssh-server+openssh" ;; esac
+        pkg="$(pkg_names ssh openssh "$def")"
+        if dry; then sub "[dry-run] would install: ${pkg// / or }"
+        else pkg_install_names "$pkg"; fi
         if ! dry && ! sshd="$(sshd_bin)"; then warn "Could not install the OpenSSH server - SSH not set up."; return 1; fi
         sshd="${sshd:-/usr/sbin/sshd}"
         ok "OpenSSH server installed ($sshd)"

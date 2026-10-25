@@ -14,6 +14,7 @@
 #  NixOS (with or without flakes: nix-env + channels, or nix profile).
 #  Safe to re-run: packages already present are skipped, the shell config block
 #  is replaced in place, and the xtree binary/symlink are refreshed.
+#  Packages: packages/package_list.txt (one list for every OS; --package-list F).
 #  Env overrides: DOTFILES_REPO, DOTFILES_BRANCH, DOTFILES_DIR, DOTFILES_PM,
 #                 DOTFILES_NET_BACKEND (nm|netplan|networkd|ifupdown|wicked|nixos)
 # =============================================================================
@@ -22,6 +23,11 @@ set -uo pipefail
 REPO_URL="${DOTFILES_REPO:-https://github.com/entropytwo-ai/dotfiles-nixish.git}"
 BRANCH="${DOTFILES_BRANCH:-main}"
 RAW_BASE="https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/${BRANCH}"
+# a GitHub fork given in DOTFILES_REPO: download single files from it as well
+if [[ "$REPO_URL" =~ github\.com[:/]([^/]+)/([^/]+)$ ]]; then
+    RAW_BASE="https://raw.githubusercontent.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}/${BRANCH}"
+fi
+PKG_LIST_REL=packages/package_list.txt   # the one package list for every OS
 MARK_BEGIN="# dotfiles-nixish BEGIN"
 MARK_END="# dotfiles-nixish END"
 XTREE_BIN="/usr/local/bin/xtree"
@@ -34,6 +40,7 @@ OPT_DOTFILES=true      # tools + shell config + xtree
 OPT_MENU=auto          # auto: show the menu when run in a terminal without system options
 OPT_YES=false
 OPT_DRY=false
+OPT_PKG_LIST=""       # --package-list FILE|URL
 DIRECT_DL=false
 NIX_MODE=""        # "env" (channels, no flakes) or "profile" (flakes); auto-detected if empty
 # system settings (applied by scripts/system-setup.sh)
@@ -56,6 +63,8 @@ Dotfiles:
   --no-dotfiles         skip tools, shell config and xtree (system settings only)
   --flakes | --no-flakes   NixOS: force nix profile (flakes) / nix-env (channels)
   --keep-all            keep every repo file (default: only what this OS needs)
+  --package-list F      use this package list (file or URL) instead of
+                        packages/package_list.txt from the repo
 
 System settings:
   --add-user NAME       create a user with sudo rights (asks for the password)
@@ -88,6 +97,7 @@ while [[ $# -gt 0 ]]; do
         --flakes) NIX_MODE=profile ;;
         --no-flakes) NIX_MODE="env" ;;
         --keep-all) OPT_KEEP_ALL=true ;;
+        --package-list) need_val "$@"; OPT_PKG_LIST="$2"; shift ;;
         --add-user) need_val "$@"; NEW_USER="$2"; SYS_FLAGS=true; shift ;;
         --ssh) DO_SSH=true; SYS_FLAGS=true ;;
         --ssh-key) need_val "$@"; SSH_KEY="$2"; DO_SSH=true; SYS_FLAGS=true; shift ;;
@@ -510,7 +520,9 @@ nix_batch() {  # nix_batch <logical-tool>...
     local t p miss=()
     for t in "$@"; do
         tool_present "$t" && continue
-        p="$(candidates "$t" | awk '{print $1}')"; [[ -n "$p" ]] && miss+=("$p")
+        p="$(candidates "$t" | awk '{print $1}')"
+        # shellcheck disable=SC2206  # a+b -> two packages
+        [[ -n "$p" ]] && miss+=(${p//+/ })
     done
     [[ ${#miss[@]} -gt 0 ]] || return 0
     info "Installing via $(nix_mode_label): ${miss[*]}"
@@ -518,64 +530,120 @@ nix_batch() {  # nix_batch <logical-tool>...
     pm_install "${miss[@]}" || info "Batch install failed - retrying one package at a time..."
 }
 
-# Package candidates per logical tool (first one that installs wins)
+# ---------------------------------------------------------------- the package list
+# packages/package_list.txt (see its header): one line per package, with the
+# package names per package manager where they differ. Parsed into:
+declare -A PKG_MAP=()      # "name|pm" -> "a,b+c"
+declare -A PKG_CMD=()      # name -> "cmd1,cmd2"  ("-" = none)
+declare -A PKG_PATH=()     # name -> "file1,file2"
+declare -A PKG_SEC=()      # section -> "name name ..."
+
+load_package_list() {  # load_package_list <file> ; 1 if unreadable
+    local f="$1" line sec=tools name tok k v n=0
+    local -a toks
+    [[ -r "$f" && -s "$f" ]] || return 1
+    PKG_MAP=(); PKG_CMD=(); PKG_PATH=(); PKG_SEC=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"; line="${line//$'\r'/}"
+        read -ra toks <<<"$line"
+        [[ ${#toks[@]} -eq 0 ]] && continue
+        if [[ "${toks[0]}" =~ ^\[([A-Za-z0-9_-]+)\]$ ]]; then sec="${BASH_REMATCH[1]}"; continue; fi
+        name="${toks[0]}"
+        if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+            warn "package_list: '$name' is not a valid package name - line skipped"; continue
+        fi
+        [[ " ${PKG_SEC[$sec]:-} " == *" $name "* ]] || PKG_SEC[$sec]+="$name "
+        n=$((n + 1))
+        for tok in "${toks[@]:1}"; do
+            k="${tok%%=*}"; v="${tok#*=}"
+            if [[ "$tok" != *=* || -z "$v" ]]; then warn "package_list: '$tok' (for $name) is not key=value - ignored"; continue; fi
+            case "$k" in
+                cmd)  PKG_CMD[$name]="$v" ;;
+                path) PKG_PATH[$name]="$v" ;;
+                apt|dnf|yum|pacman|zypper|apk|nix) PKG_MAP[$name|$k]="$v" ;;
+                *) warn "package_list: unknown key '$k' (for $name) - ignored" ;;
+            esac
+        done
+    done < "$f"
+    PKG_COUNT=$n
+}
+
+pkg_section() {  # the names in one or more sections, in file order
+    local s; for s in "$@"; do printf '%s' "${PKG_SEC[$s]:-}"; done
+}
+
+# Package candidates for this package manager, space separated; "a+b" means
+# install together. Prints nothing when the list says "-" (skip here).
 candidates() {
-    local tool="$1"
-    case "$PM:$tool" in
-        nix:gpg)         echo "gnupg" ;;
-        nix:certs)       echo "cacert" ;;
-        nix:lsb)         echo "lsb-release" ;;
-        nix:tar)         echo "gnutar" ;;
-        nix:fortune)     echo "fortune" ;;
-        nix:tldr)        echo "tldr tealdeer" ;;
-        *:git|*:curl|*:wget|*:tar|*:acl|*:nmap|*:ncdu|*:btop|*:fzf|*:glances|*:duf|*:cowsay|*:eza|*:fastfetch|*:bat|*:zsh)
-                         echo "$tool" ;;
-        apt:gpg)         echo "gnupg" ;;
-        *:gpg)           echo "gnupg2 gnupg" ;;
-        apt:certs|dnf:certs|yum:certs|zypper:certs|apk:certs|pacman:certs) echo "ca-certificates" ;;
-        apt:lsb)         echo "lsb-release" ;;
-        dnf:lsb|yum:lsb) echo "redhat-lsb-core lsb_release" ;;
-        pacman:lsb)      echo "lsb-release" ;;
-        zypper:lsb)      echo "lsb-release" ;;
-        apk:lsb)         echo "lsb-release-minimal lsb-release" ;;
-        zypper:fortune|apk:fortune) echo "fortune" ;;
-        *:fortune)       echo "fortune-mod" ;;
-        pacman:tldr|apk:tldr|zypper:tldr) echo "tealdeer tldr" ;;
-        *:tldr)          echo "tldr tealdeer" ;;
-        *)               echo "$tool" ;;
+    local t="$1" v
+    v="${PKG_MAP[$t|$PM]:-}"
+    [[ -z "$v" && "$PM" == yum ]] && v="${PKG_MAP[$t|dnf]:-}"
+    [[ -z "$v" ]] && v="$t"
+    [[ "$v" == "-" ]] && return 0
+    printf '%s\n' "${v//,/ }"
+}
+
+# is the package installed? (asks the package manager)
+pm_has() {
+    case "$PM" in
+        apt)            dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed' ;;
+        dnf|yum|zypper) rpm -q --whatprovides "$1" >/dev/null 2>&1 ;;
+        pacman)         pacman -Q "$1" >/dev/null 2>&1 ;;
+        apk)            apk info -e "$1" >/dev/null 2>&1 ;;
+        *)              return 1 ;;
     esac
 }
 
-# Command used to decide whether a tool is already present
-tool_cmd() {
-    case "$1" in
-        fortune) echo fortune ;;  certs) echo "" ;;  lsb) echo lsb_release ;;
-        acl) echo getfacl ;;      gpg) echo gpg ;;    *) echo "$1" ;;
-    esac
-}
+# explicit check given in the list (cmd= or path=)?
+has_check() { [[ -n "${PKG_PATH[$1]:-}" || ( -n "${PKG_CMD[$1]:-}" && "${PKG_CMD[$1]}" != "-" ) ]]; }
 
 tool_present() {
-    local t="$1" c
-    c="$(tool_cmd "$t")"
-    case "$t" in
-        certs) [[ -s /etc/ssl/certs/ca-certificates.crt || -s /etc/pki/tls/certs/ca-bundle.crt || -d /etc/ssl/certs ]] && return 0; return 1 ;;
-        bat)   have bat || have batcat ;;
-        *)     have "$c" ;;
-    esac
+    local t="$1" x first
+    if has_check "$t"; then
+        local pp="${PKG_PATH[$t]:-}" pc="${PKG_CMD[$t]:-}"
+        for x in ${pp//,/ }; do [[ -e "$x" ]] && return 0; done
+        [[ "${PKG_CMD[$t]:--}" == "-" ]] && return 1
+        for x in ${pc//,/ }; do have "$x" && return 0; done
+        return 1
+    fi
+    [[ "${PKG_CMD[$t]:-}" != "-" ]] && have "$t" && return 0
+    # no command of that name: is the (first) package installed?
+    first="$(candidates "$t" | awk '{print $1}')"
+    [[ -n "$first" ]] || return 1
+    for x in ${first//+/ }; do pm_has "$x" || return 1; done
 }
 
-ensure_tool() {  # ensure_tool <logical-name> [quiet]
-    local tool="$1" pkg
+# install the first candidate that works; no checks (locales, sudo, sshd...)
+# 0 = installed, 1 = failed, 2 = the list says not needed on this system
+pkg_install_entry() {
+    local c cands
+    cands="$(candidates "$1")"
+    [[ -n "$cands" ]] || return 2
+    # shellcheck disable=SC2086  # a+b -> two packages
+    for c in $cands; do pm_install ${c//+/ } && return 0; done
+    return 1
+}
+
+ensure_tool() {  # ensure_tool <name from the list>
+    local tool="$1" pkg cands
     if tool_present "$tool"; then ok "$tool (already installed)"; return 0; fi
+    cands="$(candidates "$tool")"
+    if [[ -z "$cands" ]]; then ok "$tool (not needed with $PM)"; return 0; fi
     pm_refresh
-    for pkg in $(candidates "$tool"); do
-        if pm_install "$pkg" && tool_present "$tool"; then ok "$tool (via $PM: $pkg)"; return 0; fi
+    for pkg in $cands; do
+        # shellcheck disable=SC2086
+        pm_install ${pkg//+/ } || continue
+        if tool_present "$tool"; then ok "$tool (via $PM: ${pkg//+/ + })"; return 0; fi
+        if ! has_check "$tool"; then   # installed, but no command named like it
+            ok "$tool (via $PM: ${pkg//+/ + }; no '$tool' command - add cmd= in package_list.txt to check it)"
+            return 0
+        fi
     done
     # tool-specific fallbacks
     if declare -F "fallback_$tool" >/dev/null && "fallback_$tool" && tool_present "$tool"; then
         return 0
     fi
-    warn "Could not install '$tool' on this system - skipped."
+    warn "Could not install '$tool' with $PM (tried: ${cands// /, }) - skipped. Fix its line in package_list.txt if the name differs here."
     return 1
 }
 
@@ -679,6 +747,55 @@ enable_epel() {
 }
 
 # =============================================================================
+#  0b. Load the package list (needed before anything is installed)
+# =============================================================================
+SELF="${BASH_SOURCE[0]:-}"
+SELF_DIR=""
+[[ -n "$SELF" && -f "$SELF" ]] && SELF_DIR="$(cd "$(dirname "$SELF")" 2>/dev/null && pwd)"
+
+# Only used when no list can be read or downloaded (no curl/wget yet): just
+# enough to get a downloader, then the real list is fetched.
+BOOTSTRAP_LIST='[prerequisites]
+certs path=/etc/ssl/certs/ca-certificates.crt,/etc/pki/tls/certs/ca-bundle.crt,/etc/ssl/certs apt=ca-certificates dnf=ca-certificates pacman=ca-certificates zypper=ca-certificates apk=ca-certificates nix=cacert
+curl'
+
+# get_package_list <dest> : --package-list, else this checkout, else download
+get_package_list() {
+    local src="$OPT_PKG_LIST"
+    if [[ -n "$src" ]]; then
+        if [[ "$src" =~ ^https?:// ]]; then fetch "$src" "$1" && { PKG_LIST_SRC="$src"; return 0; }
+            die "Could not download the package list $src"
+        fi
+        [[ "$src" == /* ]] || src="$PWD/$src"
+        [[ -r "$src" ]] || die "Package list not found: $OPT_PKG_LIST"
+        cp "$src" "$1" && PKG_LIST_SRC="$src" && return 0
+    fi
+    if [[ -n "$SELF_DIR" && -r "$SELF_DIR/$PKG_LIST_REL" ]]; then
+        cp "$SELF_DIR/$PKG_LIST_REL" "$1" && PKG_LIST_SRC="$SELF_DIR/$PKG_LIST_REL" && return 0
+    fi
+    if { have curl || have wget; } && fetch "$RAW_BASE/$PKG_LIST_REL" "$1"; then
+        PKG_LIST_SRC="$RAW_BASE/$PKG_LIST_REL"; return 0
+    fi
+    return 1
+}
+
+PKG_LIST_SRC=""
+if ! get_package_list "$WORKDIR/package_list.txt" || ! load_package_list "$WORKDIR/package_list.txt"; then
+    if $OPT_PACKAGES && [[ "$PM" != none ]] && ! have curl && ! have wget; then
+        info "No curl or wget yet - installing curl first to download the package list"
+        printf '%s\n' "$BOOTSTRAP_LIST" > "$WORKDIR/bootstrap.txt"
+        load_package_list "$WORKDIR/bootstrap.txt"
+        for t in certs curl; do ensure_tool "$t" || true; done
+    fi
+    if get_package_list "$WORKDIR/package_list.txt" && load_package_list "$WORKDIR/package_list.txt"; then :
+    elif $OPT_PACKAGES && $OPT_DOTFILES; then
+        warn "Could not read the package list ($PKG_LIST_REL) - only the prerequisites curl/certs are handled; packages from the list are skipped."
+        printf '%s\n' "$BOOTSTRAP_LIST" > "$WORKDIR/bootstrap.txt"; load_package_list "$WORKDIR/bootstrap.txt"
+    fi
+fi
+[[ -n "$PKG_LIST_SRC" ]] && info "Package list: $PKG_LIST_SRC (${PKG_COUNT:-0} packages)"
+
+# =============================================================================
 #  1. Prerequisites
 # =============================================================================
 if $OPT_DOTFILES && $OPT_PACKAGES; then
@@ -686,8 +803,9 @@ if $OPT_DOTFILES && $OPT_PACKAGES; then
     if [[ "$PM" != "none" ]]; then
         step "Installing prerequisites"
         enable_epel
-        nix_batch certs curl wget git tar gpg acl lsb
-        for t in certs curl wget git tar gpg acl lsb; do ensure_tool "$t" || true; done
+        read -ra PREREQS <<<"$(pkg_section prerequisites)"
+        nix_batch "${PREREQS[@]}"
+        for t in "${PREREQS[@]}"; do ensure_tool "$t" || true; done
     fi
 fi
 
@@ -695,9 +813,6 @@ fi
 #  2. Get the repo files (local checkout, or clone/update ~/.dotfiles-nixish)
 # =============================================================================
 step "Fetching dotfiles-nixish"
-SELF="${BASH_SOURCE[0]:-}"
-SELF_DIR=""
-[[ -n "$SELF" && -f "$SELF" ]] && SELF_DIR="$(cd "$(dirname "$SELF")" 2>/dev/null && pwd)"
 
 if [[ -n "$SELF_DIR" && -f "$SELF_DIR/scripts/xtree.sh" && -f "$SELF_DIR/config/bashrc_append.sh" ]]; then
     SRC_DIR="$SELF_DIR"
@@ -716,7 +831,7 @@ else
         DL=(install.sh scripts/xtree.sh scripts/system-setup.sh config/bashrc_append.sh config/zshrc_append.sh)
         # only fetch the files this OS needs (see "Trimming" below)
         if $IS_NIXOS || $OPT_KEEP_ALL; then DL+=(flake.nix flake.lock default.nix nix/module.nix nix/packages.nix nix/xtree.nix); fi
-        if ! $IS_NIXOS || $OPT_KEEP_ALL; then DL+=(packages/package_list.txt); fi
+        DL+=("$PKG_LIST_REL")   # used on every OS
         for f in "${DL[@]}"; do
             mkdir -p "$SRC_DIR/$(dirname "$f")"
             fetch "$RAW_BASE/$f" "$SRC_DIR/$f" || die "Failed to download $f from $RAW_BASE"
@@ -733,13 +848,14 @@ fi
 #  2b. Keep only the repo files this OS needs
 # =============================================================================
 # NixOS-only : flake.nix flake.lock default.nix nix/   (declarative Nix install)
-# other OSes : packages/package_list.txt               (apt/dnf/pacman/... names)
+#              -> removed on every other OS
+# packages/package_list.txt is used on EVERY OS (NixOS too), so it always stays.
 # Git checkouts are trimmed with sparse-checkout: the files leave the working
 # tree, `git status` stays clean, `git pull` keeps working and --keep-all
 # brings everything back. Plain (non-git) copies just have the files deleted.
 NIX_ONLY=(flake.nix flake.lock default.nix nix)
-NON_NIX_ONLY=(packages)
-if $IS_NIXOS; then UNNEEDED=("${NON_NIX_ONLY[@]}"); OS_KIND="NixOS"; KIND="non-NixOS"
+NON_NIX_ONLY=()   # nothing: NixOS uses every file (older versions hid packages/)
+if $IS_NIXOS; then UNNEEDED=(${NON_NIX_ONLY[@]+"${NON_NIX_ONLY[@]}"}); OS_KIND="NixOS"; KIND="non-NixOS"
 else UNNEEDED=("${NIX_ONLY[@]}"); OS_KIND="$OS_NAME"; KIND="NixOS-only"; fi
 SPARSE_TAG="# dotfiles-nixish: sparse-checkout managed by install.sh"
 TRIM_NOTE=""       # one-line result, repeated in the Summary
@@ -750,7 +866,7 @@ what_is() {  # what each OS-specific path is for
         flake.lock)  echo "version pins for the flake" ;;
         default.nix) echo "Nix entry point without flakes" ;;
         nix)         echo "NixOS module and Nix package definitions" ;;
-        packages)    echo "package names for apt/dnf/pacman/zypper/apk" ;;
+        packages)    echo "the package list (used on every OS)" ;;
         *)           echo "" ;;
     esac
 }
@@ -795,6 +911,19 @@ trim_git() {
                 && as_target rm -f "$spf" && ok "All repo files restored"
         else
             ok "--keep-all: keeping every repo file"
+        fi
+        return 0
+    fi
+    if [[ ${#UNNEEDED[@]} -eq 0 ]]; then
+        if [[ "$cur" == "true" ]]; then   # an older install.sh hid files that are needed now
+            sub "Files hidden by an older install.sh are needed now (packages/ is used on ${OS_KIND} too) - restoring them"
+            printf '%s\n/*\n' "$SPARSE_TAG" | as_target tee "$spf" >/dev/null
+            if as_target git -C "$SRC_DIR" read-tree -mu HEAD \
+                && as_target git -C "$SRC_DIR" config core.sparseCheckout false \
+                && as_target rm -f "$spf"; then ok "All repo files restored - every file is used on ${OS_KIND}"
+            else warn "Could not restore the hidden files in $(disp "$SRC_DIR") - run: git -C $SRC_DIR sparse-checkout disable"; fi
+        else
+            ok "Nothing to remove - every repo file is used on ${OS_KIND}"
         fi
         return 0
     fi
@@ -844,6 +973,7 @@ trim_git() {
 trim_plain() {
     local p found=()
     if $OPT_KEEP_ALL; then ok "--keep-all: keeping every repo file"; return 0; fi
+    if [[ ${#UNNEEDED[@]} -eq 0 ]]; then ok "Nothing to remove - every repo file is used on ${OS_KIND}"; return 0; fi
     for p in "${UNNEEDED[@]}"; do [[ -e "$SRC_DIR/$p" ]] && found+=("$p"); done
     if [[ ${#found[@]} -eq 0 ]]; then
         if $DIRECT_DL; then
@@ -860,7 +990,7 @@ trim_plain() {
 }
 
 step "Keeping only the repo files needed on ${OS_NAME}"
-sub "Detected $($IS_NIXOS && echo "NixOS - the apt/dnf/pacman package list is not needed" || echo "$OS_NAME (not NixOS) - the NixOS/Nix files are not needed")"
+sub "Detected $($IS_NIXOS && echo "NixOS - every repo file is used here" || echo "$OS_NAME (not NixOS) - the NixOS/Nix files are not needed")"
 if [[ -e "$SRC_DIR/.git" ]] && ! have git; then
     info "$(disp "$SRC_DIR") is a git checkout but git is not installed - leaving its files alone."
 elif have git && [[ -d "$SRC_DIR/.git" || -f "$SRC_DIR/.git" ]] \
@@ -879,17 +1009,29 @@ if $OPT_DOTFILES; then
 # =============================================================================
 #  3. Packages
 # =============================================================================
-TOOLS=(eza duf cowsay fortune fastfetch tldr nmap ncdu btop fzf glances curl bat)
-$OPT_ZSH && TOOLS+=(zsh)
+# A user-edited list in the checkout wins over the one downloaded at the
+# start (unless --package-list was given)
+if [[ -z "$OPT_PKG_LIST" && -r "$SRC_DIR/$PKG_LIST_REL" ]] \
+   && ! cmp -s "$SRC_DIR/$PKG_LIST_REL" "$WORKDIR/package_list.txt"; then
+    cp "$SRC_DIR/$PKG_LIST_REL" "$WORKDIR/package_list.txt" \
+        && load_package_list "$WORKDIR/package_list.txt" \
+        && PKG_LIST_SRC="$SRC_DIR/$PKG_LIST_REL" \
+        && { ! $OPT_PACKAGES || info "Using the package list in $(disp "$PKG_LIST_SRC") (${PKG_COUNT:-0} packages)"; }
+fi
+read -ra TOOLS <<<"$(pkg_section tools)"
+if $OPT_ZSH; then read -ra ZT <<<"$(pkg_section zsh)"; TOOLS+=("${ZT[@]}"); fi
+[[ ${#TOOLS[@]} -eq 0 ]] && info "The package list has no [tools] entries - no tools to install."
 
 if $OPT_PACKAGES && [[ "$PM" != "none" ]]; then
     step "Installing packages"
-    nix_batch "${TOOLS[@]}"
-    for t in "${TOOLS[@]}"; do ensure_tool "$t" || true; done
+    if [[ ${#TOOLS[@]} -gt 0 ]]; then
+        nix_batch "${TOOLS[@]}"
+        for t in "${TOOLS[@]}"; do ensure_tool "$t" || true; done
+    fi
 
     # The fortune binary can exist without any quote database ("No fortunes found"):
     # apt's --no-install-recommends skips 'fortunes-min'/'fortunes'. Verify and fix.
-    if have fortune && ! fortune >/dev/null 2>&1; then
+    if [[ " ${TOOLS[*]} " == *" fortune "* ]] && have fortune && ! fortune >/dev/null 2>&1; then
         case "$PM" in
             apt)            fdb="fortunes-min fortunes" ;;
             dnf|yum|pacman) fdb="fortune-mod" ;;
@@ -907,7 +1049,7 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]]; then
     fi
 
     # tealdeer/tldr need a page cache before first use
-    if have tldr; then
+    if [[ " ${TOOLS[*]} " == *" tldr "* ]] && have tldr; then
         if as_target timeout 90 tldr --update >/dev/null 2>&1; then ok "tldr page cache updated"
         else info "(tldr cache update skipped - run 'tldr --update' later if needed)"; fi
     fi
@@ -918,18 +1060,17 @@ fi
 # =============================================================================
 if $OPT_PACKAGES && ! locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then
     step "Generating en_US.UTF-8 locale (used by LC_TIME)"
+    pkg_install_entry locales; LOC_RC=$?   # 2 = the list says nothing to install here
     case "$PM" in
-        apt)    pm_install locales
-                "${SUDO[@]}" sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen 2>/dev/null
+        apt)    "${SUDO[@]}" sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen 2>/dev/null
                 grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null \
                     || echo 'en_US.UTF-8 UTF-8' | "${SUDO[@]}" tee -a /etc/locale.gen >/dev/null
                 "${SUDO[@]}" locale-gen >/dev/null 2>&1 ;;
         pacman) "${SUDO[@]}" sed -i 's/^#\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen && "${SUDO[@]}" locale-gen >/dev/null 2>&1 ;;
-        dnf|yum) pm_install glibc-langpack-en || pm_install glibc-locale-source ;;
-        zypper) pm_install glibc-locale ;;
         nix)    info "NixOS locales are declarative - add to /etc/nixos/configuration.nix:"
                 info '  i18n.supportedLocales = [ "en_US.UTF-8/UTF-8" ];  # then: sudo nixos-rebuild switch' ;;
     esac
+    [[ $LOC_RC -eq 1 ]] && info "(could not install the [locale] package(s): $(candidates locales))"
     if locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then ok "en_US.UTF-8 available"
     else warn "en_US.UTF-8 locale not available - LC_TIME may fall back to C."; fi
 fi
@@ -1178,12 +1319,7 @@ fi
 step "Summary"
 XT=(); $XTREE_BIN_OK && XT=(xtree)
 for t in "${TOOLS[@]}" "${XT[@]}"; do
-    case "$t" in
-        bat)   c=bat; have bat || c=batcat ;;
-        xtree) c="$XTREE_BIN" ;;
-        *)     c="$t" ;;
-    esac
-    if have "$c" || [[ -x "$c" ]]; then printf '   %s✔%s %s\n' "$C_G" "$C_0" "$t"
+    if { [[ "$t" == xtree ]] && [[ -x "$XTREE_BIN" ]]; } || { [[ "$t" != xtree ]] && tool_present "$t"; }; then printf '   %s✔%s %s\n' "$C_G" "$C_0" "$t"
     else printf '   %s✖%s %s %s(missing)%s\n' "$C_R" "$C_0" "$t" "$C_Y" "$C_0"; fi
 done
 

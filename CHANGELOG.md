@@ -1,0 +1,160 @@
+# Changelog
+
+What each round of changes added to dotfiles-nixish, newest first. Commit
+hashes point to the matching commits on `main`.
+
+## 2026-10-25: One package list for every OS (latest)
+
+- **`packages/package_list.txt` is now the single real package list.** It
+  used to be for reference only: the tools were hard-coded in `install.sh`
+  and `nix/packages.nix`. Now every OS reads the same file: Debian/Ubuntu,
+  Fedora/RHEL, Arch, openSUSE, Alpine and NixOS (with or without flakes).
+- **All packages are in the list.** That covers the prerequisites (CA
+  certificates, curl, wget, git, tar, gpg, acl, lsb-release), zsh, the
+  OpenSSH server, sudo, the locale package and the tool set.
+- **Sections:** `[prerequisites]`, `[zsh]` (only with `--zsh`), `[ssh]` (only
+  when SSH is enabled and no server is installed), `[sudo]` (only when a user
+  is created and sudo is missing), `[locale]` (only when en_US.UTF-8 is
+  missing) and `[tools]`.
+- **Simple line format:** `name [apt= dnf= yum= pacman= zypper= apk= nix=]
+  [cmd=] [path=]`.
+  - `a,b` means try a, then b.
+  - `a+b` means install both together.
+  - `-` means skip on that package manager.
+  - `yum` falls back to the `dnf=` name.
+  - `#` starts a comment. Windows (CRLF) line endings are accepted.
+- **Add your own packages** by adding a line under `[tools]`. An unknown or
+  mistyped package is a warning and gets skipped. It never stops the run,
+  and the summary shows it as missing.
+- **New option `--package-list FILE|URL`** uses another list without
+  forking the repo.
+- **Your edited list wins.** If `~/.dotfiles-nixish/packages/package_list.txt`
+  has local changes, the next run uses it instead of the copy downloaded at
+  the start.
+- **Forks work:** files are downloaded from the repo set in `DOTFILES_REPO`,
+  not always from the original GitHub repo.
+- **NixOS now reads the list too:**
+  - `install.sh` installs the `nix=` names with `nix-env` / `nix profile`.
+  - `nix/packages.nix` reads the list in pure Nix, so the NixOS module,
+    `default.nix` and the flake install the same packages.
+  - Names that don't exist in nixpkgs are skipped with an evaluation
+    warning.
+- **File trimming:** `packages/` is kept on every OS now. NixOS installs
+  where an older version had hidden it get it back on the next run.
+- The summary checks each tool with the same rule the installer uses: the
+  `cmd=`/`path=` checks from the list, or the installed package.
+
+## 2026-10-25: NixOS system settings made safe (`7d4b24c`)
+
+- Settings from earlier runs are never dropped. The generated NixOS module is
+  merged instead of overwritten. Before, NixOS deleted the user declared by
+  the previous run.
+- Declared users are checked after `nixos-rebuild switch`.
+- The running hostname is set right away, because `switch` only changes
+  `/etc/hostname`.
+- Added a hint for Proxmox LXC containers.
+
+## 2026-10-25: SSH on LXC/Proxmox NixOS (`3eba8af`)
+
+- The SSH check understands socket activation (`sshd.socket`,
+  `services.openssh.startWhenNeeded` in LXC/Proxmox images). It waits up to
+  20 s for host keys to be generated.
+- Known harmless LXC mount failures (e.g. `sys-kernel-debug.mount`) are shown
+  as info, not as warnings.
+- Rebuild logs are saved where they survive the run.
+
+## 2026-10-25: Menu with nothing pre-selected (`0cdb15e`)
+
+- The first-run menu no longer ticks "Dotfiles" (option 1) by default.
+
+## 2026-10-25: nixos-rebuild partial success (`aaeb904`)
+
+- `switch-to-configuration` exit code 4 means "activated, but some units
+  failed". The config is kept and the failed units are reported, instead of
+  rolling back.
+- The dry-build log is saved.
+
+## 2026-10-25: NixOS fixes (`f04e887`)
+
+- Missing imports such as `incus.nix` are recreated as stubs, so an existing
+  broken config can still build.
+- Added a systemd-networkd backend for NixOS networking
+  (`10-dotfiles-nixish-<iface>`).
+- Rollback only undoes the changes from this run.
+- Clearer errors when the existing config was already broken.
+- `install.sh` puts `/run/wrappers/bin` first in PATH (for sudo on NixOS),
+  detects the init system, and counts warnings.
+
+## 2026-10-25: System settings (`d80673b`)
+
+- A first-run menu, plus flags, for system settings:
+  - create a sudo user (hidden password, typed twice);
+  - SSH for non-root users (root login off, keys, lock-out guard);
+  - hostname, static IP/subnet/gateway or DHCP, and DNS.
+- Per-distro backends: nmcli, netplan, systemd-networkd, ifupdown, wicked and
+  a NixOS module.
+- Backups, config validation and `--dry-run`.
+
+## 2026-10-25: Clear file-trimming messages (`ba22d81`)
+
+- Says which OS-specific files were removed and why ("unnecessary on
+  <OS>"), with a short description of each and a line in the summary.
+- README rewrapped to 80 columns, so it reads well in nano.
+
+## 2026-10-25: Keep only the files this OS needs (`80915bb`)
+
+- Non-NixOS systems drop `flake.nix`, `flake.lock`, `default.nix` and
+  `nix/`, using git sparse-checkout (so `git status` stays clean and
+  `git pull` still works).
+- `--keep-all` brings every file back.
+
+## 2026-10-25: Step-by-step output (`56c28f0`)
+
+- While the dotfiles are edited, the output shows each file, its backup, the
+  duplicate options removed (line, old value → new value), lines kept or left
+  alone, and the syntax-check result.
+
+## 2026-10-25: No duplicate shell settings (`f392d8e`)
+
+- Settings outside the managed block that the block sets again are removed,
+  so each option exists only once in `~/.bashrc` / `~/.zshrc`. The result is
+  syntax-checked and the original is backed up.
+
+## 2026-10-24: xtree colours (`4886838`)
+
+- Colours work on terminals whose terminfo lacks them (vt102/vt220), using an
+  ANSI fallback.
+- 256-colour orange is downgraded on 8-colour consoles (TERM=linux).
+- `NO_COLOR` is honoured.
+
+## 2026-10-24: xtree install hardening (`d3ab762`)
+
+- Works when sudo's secure_path lacks coreutils (NixOS).
+- xtree is self-tested after install. If that fails, it falls back to
+  `~/.local/bin`, and a dangling `~/xtree` link is never left behind.
+
+## 2026-10-24: Login shells (`a1961ae`)
+
+- Login shells (console, SSH) now load `~/.bashrc`: `~/.bash_profile` or
+  `~/.profile` is created or patched as needed.
+- Nix profile directories are added to PATH in the shell block.
+
+## 2026-10-24: NixOS support (`c023f08`)
+
+- NixOS with or without flakes:
+  - the installer uses `nix-env` (channels) or `nix profile` (flakes);
+  - there is a NixOS module, a flake and a `default.nix`.
+
+## 2026-10-24: fortune quotes (`294cabd`)
+
+- Installs the fortune quote database (fortunes-min/fortunes), so the cowsay
+  greeting no longer says "No fortunes found".
+
+## 2026-10-24: First version (`ae67ba4`)
+
+- A one-line `curl | bash` installer for Debian/Ubuntu, Fedora/RHEL, Arch,
+  openSUSE and Alpine.
+- Installs the tool set (eza, duf, cowsay, fortune, fastfetch, tldr, nmap,
+  ncdu, btop, fzf, glances, curl, bat) and xtree.
+- Adds an idempotent BEGIN/END block to `~/.bashrc` (history, aliases, and a
+  fastfetch + cowsay greeting).

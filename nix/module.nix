@@ -30,7 +30,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = (import ./packages.nix pkgs) ++ [ xtree ];
+    environment.systemPackages = (import ./packages.nix pkgs { }) ++ [ xtree ];
 
     programs.bash.interactiveShellInit = lib.mkIf cfg.shellConfig
       (builtins.readFile ../config/bashrc_append.sh);
