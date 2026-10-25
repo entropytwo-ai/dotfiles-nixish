@@ -102,6 +102,14 @@ Safety:
 - NixOS: the generated module is imported into `configuration.nix`
   (and `git add`ed for flakes). The new user is also created at once, so
   the password works; it lasts unless `users.mutableUsers = false`.
+- NixOS + systemd-networkd (e.g. Incus/LXD images): network settings go
+  into `systemd.network.networks."10-dotfiles-nixish-<iface>"`, which
+  wins over the image's `50-eth0` DHCP unit.
+- NixOS: a missing imported file such as `./incus.nix` (Incus images on
+  Proxmox) is recreated as a small stub so `nixos-rebuild` can run.
+- NixOS rollback only undoes this run: files it created are removed,
+  files it changed are restored, other files are never touched. It also
+  tells you if the config was already broken before this run.
 
 
 ## 📦 What it installs

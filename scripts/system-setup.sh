@@ -57,6 +57,7 @@ sys_write() {
             && sudo_ tee "$f" < "$tmp" >/dev/null && sudo_ chmod "$mode" "$f" \
             || { warn "Could not write $f"; return 1; }
         sub "Created $f"
+        printf '%s\n' "$f" >> "$WORKDIR/sys-created"   # a file: sys_write often runs in a pipe (subshell)
     fi
 }
 
@@ -74,10 +75,23 @@ sys_remove() {
     sudo_ rm -f "$1"
 }
 
-restore_backup() {  # restore_backup <file> : put the .bak from this run back
+# restore_backup <file> : undo this run's change to <file>
+#   changed this run -> put the backup back; created this run -> remove it;
+#   untouched (e.g. already up to date) -> leave it alone, never delete it
+restore_backup() {
     local b="$1.dotfiles-nixish.bak.$TS"
-    if sudo_ test -e "$b"; then sudo_ tee "$1" < <(sudo_ cat "$b") >/dev/null
-    else sudo_ rm -f "$1"; fi
+    if sudo_ test -e "$b"; then sudo_ tee "$1" < <(sudo_ cat "$b") >/dev/null; return; fi
+    if grep -qxF -- "$1" "$WORKDIR/sys-created" 2>/dev/null; then sudo_ rm -f "$1"; fi
+    return 0
+}
+
+# nix_parse <file|-> : 0 = parses, 1 = syntax error, 2 = could not check
+nix_parse() {
+    local out
+    have nix-instantiate || return 2
+    out="$(nix-instantiate --parse "$1" 2>&1 >/dev/null)" && return 0
+    grep -qiE 'syntax error|unexpected|undefined variable|at «stdin»|, at /' <<<"$out" && { NIX_PARSE_ERR="$(grep -m1 'error' <<<"$out")"; return 1; }
+    return 2
 }
 
 nix_str() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//\$\{/\\\$\{}"; printf '"%s"' "$s"; }
@@ -630,8 +644,36 @@ dns_resolv_conf() {
 }
 
 # --- NixOS without NetworkManager
+# Does this NixOS configure its network with systemd-networkd? (the Incus/LXD
+# container images do: systemd.network.networks."50-eth0" with DHCP)
+nixos_networkd() {
+    grep -qsE 'systemd\.network([.[:space:]=]|$)|useNetworkd[[:space:]]*=[[:space:]]*true' /etc/nixos/*.nix \
+        || systemctl is-active -q systemd-networkd 2>/dev/null
+}
+
 net_nixos() {
     local d list=""
+    for d in $DNS_LIST; do list+=" $(nix_str "$d")"; done
+    if $DO_NET && nixos_networkd; then
+        # networkd uses the first matching .network file in name order, so
+        # "10-..." wins over the image's "50-eth0" without editing it
+        local n; n="$(nix_str "10-dotfiles-nixish-$NET_IFACE")"
+        NIX_PARTS+=("# IPv4 on $NET_IFACE (systemd-networkd; overrides later units such as 50-$NET_IFACE)"
+                    "systemd.network.enable = true;"
+                    "systemd.network.networks.$n.matchConfig.Name = $(nix_str "$NET_IFACE");"
+                    "systemd.network.networks.$n.linkConfig.RequiredForOnline = \"routable\";")
+        if [[ "$NET_MODE" == dhcp ]]; then
+            NIX_PARTS+=("systemd.network.networks.$n.networkConfig.DHCP = \"ipv4\";")
+            [[ -n "$list" ]] && NIX_PARTS+=("systemd.network.networks.$n.dhcpV4Config.UseDNS = false;")
+        else
+            NIX_PARTS+=("systemd.network.networks.$n.networkConfig.DHCP = \"no\";"
+                        "systemd.network.networks.$n.address = [ $(nix_str "$NET_ADDR/$NET_PREFIX") ];"
+                        "systemd.network.networks.$n.gateway = [ $(nix_str "$NET_GW") ];")
+        fi
+        [[ -n "$list" ]] && NIX_PARTS+=("systemd.network.networks.$n.dns = [$list ];" "# DNS" "networking.nameservers = lib.mkForce [$list ];")
+        sub "Added the network settings to the NixOS module (systemd-networkd unit 10-dotfiles-nixish-$NET_IFACE)"
+        return 0
+    fi
     if $DO_NET; then
         NIX_PARTS+=("# IPv4 on $NET_IFACE")
         if [[ "$NET_MODE" == dhcp ]]; then
@@ -645,9 +687,10 @@ net_nixos() {
         fi
     fi
     if [[ -n "$DNS_LIST" ]]; then
-        for d in $DNS_LIST; do list+=" $(nix_str "$d")"; done
         NIX_PARTS+=("# DNS" "networking.nameservers = lib.mkForce [$list ];")
-        [[ "$NET_MODE" == dhcp || "$DO_NET" == false ]] && NIX_PARTS+=("networking.dhcpcd.extraConfig = \"nohook resolv.conf\";")
+        if [[ "$NET_MODE" == dhcp || "$DO_NET" == false ]] && ! nixos_networkd; then
+            NIX_PARTS+=("networking.dhcpcd.extraConfig = \"nohook resolv.conf\";")
+        fi
     fi
     sub "Added the network settings to the NixOS module"
 }
@@ -741,46 +784,112 @@ nixos_import() {  # add ./dotfiles-nixish-system.nix to configuration.nix import
         awk '!done && /^[[:space:]]*\{[[:space:]]*$/ && seen { print; print "  imports = [ ./dotfiles-nixish-system.nix ];  # added by dotfiles-nixish"; done = 1; next }
              /\}[[:space:]]*:/ { seen = 1 } { print }' "$cfg" > "$WORKDIR/cfg.nix"
     fi
-    if ! grep -q 'dotfiles-nixish-system\.nix' "$WORKDIR/cfg.nix" || { have nix-instantiate && ! nix-instantiate --parse "$WORKDIR/cfg.nix" >/dev/null 2>&1; }; then
+    local rc=0; nix_parse "$WORKDIR/cfg.nix" || rc=$?
+    if ! grep -q 'dotfiles-nixish-system\.nix' "$WORKDIR/cfg.nix" || [[ $rc -eq 1 ]]; then
         warn "Could not add the import automatically - add ./dotfiles-nixish-system.nix to 'imports' in $cfg."
         return 1
     fi
     sys_write "$cfg" 644 < "$WORKDIR/cfg.nix"
 }
 
+# Relative files imported by configuration.nix that do not exist break every
+# nixos-rebuild. The Incus/LXD NixOS images import ./incus.nix (or ./lxd.nix),
+# which only Incus/LXD generate when the container is created - Proxmox never
+# does, so nixos-rebuild fails there out of the box. Recreate that one file
+# (same content Incus would write); stop for anything else.
+NIX_STUBS=()
+nixos_check_imports() {
+    local cfg=/etc/nixos/configuration.nix rel f bad=() host
+    [[ -f "$cfg" ]] || return 0
+    while IFS= read -r rel; do
+        [[ "$rel" == ./dotfiles-nixish-system.nix ]] && continue
+        f="/etc/nixos/${rel#./}"
+        [[ -e "$f" ]] && continue
+        case "${rel##*/}" in
+            incus.nix|lxd.nix)
+                host="$(hostname 2>/dev/null || echo nixos)"
+                sub "configuration.nix imports $rel, which is missing. Incus/LXD create it when the"
+                sub "container is made, Proxmox does not - so nixos-rebuild could not work here yet."
+                printf '%s\n# Normally generated by Incus/LXD from its container template.\n{ lib, ... }:\n{\n  networking.hostName = lib.mkDefault %s;\n}\n' \
+                    "$SYS_TAG" "$(nix_str "$host")" | sys_write "$f" 644 || return 1
+                dry || ok "Recreated $f (keeps the hostname \"$host\")"
+                NIX_STUBS+=("$f") ;;
+            *) bad+=("$rel") ;;
+        esac
+    done < <(sed 's/#.*//' "$cfg" | grep -oE '\./[A-Za-z0-9._/+-]+' | sort -u)
+    if [[ ${#bad[@]} -gt 0 ]]; then
+        warn "Your configuration.nix imports ${bad[*]}, which does not exist - nixos-rebuild fails even without dotfiles-nixish. Fix that, then re-run. Nothing was changed."
+        return 1
+    fi
+}
+
+nixos_not_applied() {  # list the settings that needed nixos-rebuild
+    local l=()
+    $DO_USER && l+=("user $NEW_USER (NixOS entry only - the account itself was created)")
+    $DO_SSH && l+=("SSH"); $DO_HOST && l+=("hostname")
+    [[ "$(net_backend)" == nixos ]] && { $DO_NET && l+=("IP address"); $DO_DNS && l+=("DNS"); }
+    local IFS=','; echo "${l[*]}" | sed 's/,/, /g'
+}
+
+nixos_undo() {  # put /etc/nixos back exactly as it was before this run
+    dry && return 0
+    local f
+    for f in /etc/nixos/configuration.nix "$NIX_SYS_FILE" "${NIX_STUBS[@]}"; do restore_backup "$f"; done
+}
+
+NIX_STATE=""   # ok | failed | background | manual | dry ("" = nothing for NixOS)
 nixos_apply() {
     [[ ${#NIX_PARTS[@]} -gt 0 ]] || return 0
     step "Applying the system settings on NixOS (declaratively)"
     local body l
+    NIX_STATE=failed
     body="$SYS_TAG"$'\n# Imported from configuration.nix. Delete the import line to undo.\n{ lib, ... }:\n{\n'
     for l in "${NIX_PARTS[@]}"; do body+="  $l"$'\n'; done
     body+=$'}\n'
-    if have nix-instantiate && ! nix-instantiate --parse - <<<"$body" >/dev/null 2>&1; then
-        warn "Generated Nix module does not parse - nothing changed (please report this bug)."; return 1
-    fi
-    printf '%s' "$body" | sys_write "$NIX_SYS_FILE" 644 || return 1
+    printf '%s' "$body" > "$WORKDIR/module.nix"
+    local prc=0; nix_parse "$WORKDIR/module.nix" || prc=$?
+    case $prc in
+        0) sub "Generated module parses (nix-instantiate --parse)" ;;
+        1) warn "Generated Nix module does not parse - nothing changed (please report this bug): $NIX_PARSE_ERR"; return 1 ;;
+        *) sub "Could not run nix-instantiate --parse - nixos-rebuild will check the module" ;;
+    esac
+    nixos_check_imports || { nixos_undo; return 1; }
+    printf '%s' "$body" | sys_write "$NIX_SYS_FILE" 644 || { nixos_undo; return 1; }
     if [[ -f /etc/nixos/flake.nix ]] && ! grep -q 'configuration\.nix' /etc/nixos/flake.nix; then
         warn "Your flake.nix does not use configuration.nix - add ./dotfiles-nixish-system.nix to its modules list, then run: sudo nixos-rebuild switch"
-        return 0
+        NIX_STATE=manual; return 0
     fi
-    nixos_import || return 0
+    nixos_import || { nixos_undo; NIX_STATE=manual; return 0; }
     # flakes only see files git knows about
     if [[ -f /etc/nixos/flake.nix && -d /etc/nixos/.git ]]; then
         sys_run git -C /etc/nixos add dotfiles-nixish-system.nix && sub "git add dotfiles-nixish-system.nix (flakes only see tracked files)"
     fi
-    if dry; then sub "[dry-run] would run: nixos-rebuild switch"; return 0; fi
+    if dry; then sub "[dry-run] would run: nixos-rebuild switch"; NIX_STATE=dry; return 0; fi
     if $DROP_RISK; then
         sudo_ sh -c "setsid nohup nixos-rebuild switch >$NET_LOG 2>&1 </dev/null &"
         ok "nixos-rebuild switch is running in the background (log: $NET_LOG) - your SSH session will drop"
-        return 0
+        NIX_STATE=background; return 0
     fi
     sub "Running nixos-rebuild switch (this can take a few minutes)..."
+    local log=/var/log/dotfiles-nixish-rebuild.log
     if sudo_ nixos-rebuild switch >"$WORKDIR/rebuild.log" 2>&1; then
         ok "nixos-rebuild switch finished"
+        NIX_STATE=ok
     else
-        warn "nixos-rebuild failed - your system was not changed. Undoing the config edits. Last lines:"
-        tail -5 "$WORKDIR/rebuild.log" | sed 's/^/        /'
-        restore_backup /etc/nixos/configuration.nix; restore_backup "$NIX_SYS_FILE"
+        sudo_ cp "$WORKDIR/rebuild.log" "$log" 2>/dev/null || log="$WORKDIR/rebuild.log"
+        warn "nixos-rebuild failed - the running system was not changed. Not applied: $(nixos_not_applied). Full log: $log"
+        sub "Errors:"
+        { grep -E '^[[:space:]]*error:' "$WORKDIR/rebuild.log" || tail -3 "$WORKDIR/rebuild.log"; } \
+            | sed 's/^[[:space:]]*//' | awk '!seen[$0]++' | head -5 | sed 's/^/        /'
+        sub "Undoing the config edits"
+        nixos_undo
+        # tell the user whose problem it is: does their own config build without us?
+        sub "Checking whether the configuration as it was before this run builds..."
+        if sudo_ nixos-rebuild dry-build >"$WORKDIR/dry.log" 2>&1; then
+            info "It does - so the new settings caused the failure. Please report it with $log"
+        else
+            warn "Your NixOS configuration did not build before this run either - 'sudo nixos-rebuild switch' fails the same way. Fix it first, then re-run."
+        fi
         return 1
     fi
     # verify what we asked for
@@ -807,10 +916,19 @@ system_setup() {
     if $DO_NET || $DO_DNS; then setup_network; fi
     nixos_apply
     apply_network
-    if $DO_NET; then
-        if [[ "$NET_MODE" == dhcp ]]; then SYS_NOTES+=("Network: $NET_IFACE uses DHCP")
-        else SYS_NOTES+=("Network: $NET_IFACE $NET_ADDR/$NET_PREFIX via $NET_GW"); fi
+    # on NixOS the network only changes if nixos-rebuild did its job
+    local tail=""
+    if [[ "$(net_backend)" == nixos ]]; then
+        case "$NIX_STATE" in
+            ok|dry) ;;
+            background) tail="  (being applied in the background)" ;;
+            *) return 0 ;;
+        esac
     fi
-    $DO_DNS && SYS_NOTES+=("DNS: $DNS_LIST")
+    if $DO_NET; then
+        if [[ "$NET_MODE" == dhcp ]]; then SYS_NOTES+=("Network: $NET_IFACE uses DHCP$tail")
+        else SYS_NOTES+=("Network: $NET_IFACE $NET_ADDR/$NET_PREFIX via $NET_GW$tail"); fi
+    fi
+    $DO_DNS && SYS_NOTES+=("DNS: $DNS_LIST$tail")
     return 0
 }

@@ -186,6 +186,9 @@ NIX_FLAGS=(--extra-experimental-features "nix-command flakes")
 if [[ "$PM" == "nix" ]]; then
     # user-profile bins (classic, XDG and NixOS per-user locations)
     PATH="$TARGET_HOME/.nix-profile/bin:$TARGET_HOME/.local/state/nix/profile/bin:/etc/profiles/per-user/$TARGET_USER/bin:/run/current-system/sw/bin:$PATH"
+    # NixOS: setuid programs (sudo, su, ping...) only work through the wrappers,
+    # so /run/wrappers/bin must come first - the store copy of sudo is not setuid
+    [[ -d /run/wrappers/bin ]] && PATH="/run/wrappers/bin:$PATH"
     if [[ -z "$NIX_MODE" ]]; then
         if [[ -e "$TARGET_HOME/.nix-profile/manifest.json" || -e "$TARGET_HOME/.local/state/nix/profile/manifest.json" ]]; then
             NIX_MODE=profile
@@ -1204,6 +1207,8 @@ ${C_B}${C_G}🎉 dotfiles-nixish is installed!${C_0}
    Try:  ${C_C}l${C_0}  ${C_C}ll${C_0}  ${C_C}cowsays${C_0}  ${C_C}xtree -f -L 2 .${C_0}  ${C_C}xtree -r -p -u -t ~${C_0}  ${C_C}duf${C_0}  ${C_C}btop${C_0}
    Update later:  bash ${SRC_DIR}/install.sh   (after: git -C ${SRC_DIR} pull)
 EOF
+elif [[ ${#WARNINGS[@]} -gt 0 ]]; then
+    printf '\n%s%s⚠ Finished with %d warning(s) - see above%s\n' "$C_B" "$C_Y" "${#WARNINGS[@]}" "$C_0"
 else
     printf '\n%s%s🎉 Done%s%s\n' "$C_B" "$C_G" "$($OPT_DRY && echo " (dry run - nothing was changed)")" "$C_0"
 fi
