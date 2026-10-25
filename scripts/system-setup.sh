@@ -884,6 +884,67 @@ nixos_check_ssh() {
     esac
 }
 
+# Which setting does a module line belong to? (by its option name)
+nix_category() {
+    case "$1" in
+        users.users.*)                                  echo "user:$1" ;;
+        security.sudo.*)                                echo sudo ;;
+        services.openssh.*)                             echo ssh ;;
+        networking.hostName|networking.domain)          echo host ;;
+        networking.nameservers|networking.dhcpcd.extraConfig|systemd.network.networks.*.dns|systemd.network.networks.*.dhcpV4Config.UseDNS) echo dns ;;
+        systemd.network.*|networking.interfaces.*|networking.defaultGateway) echo net ;;
+        *)                                              echo other ;;
+    esac
+}
+
+# The module is rewritten on every run, so carry over what earlier runs put
+# there and this run does not change. This matters: NixOS DELETES a user that
+# was declared before and is no longer declared (update-users-groups.pl,
+# /var/lib/nixos/declarative-users) - even with users.mutableUsers = true.
+# Fills NIX_KEPT with the old lines to keep.
+NIX_KEPT=()
+nixos_keep_old() {
+    NIX_KEPT=()
+    sudo_ test -f "$NIX_SYS_FILE" || return 0
+    local touched=" " l k new_keys=" "
+    $DO_SSH  && touched+="ssh "
+    $DO_HOST && touched+="host "
+    $DO_NET  && touched+="net "
+    $DO_DNS  && touched+="dns "
+    for l in "${NIX_PARTS[@]}"; do [[ "$l" == *" = "* && "$l" != \#* ]] && new_keys+="${l%% = *} "; done
+    while IFS= read -r l; do
+        l="${l#"${l%%[![:space:]]*}"}"
+        [[ "$l" == *" = "*";" && "$l" != \#* ]] || continue
+        k="${l%% = *}"
+        [[ "$new_keys" == *" $k "* ]] && continue
+        [[ "$touched" == *" $(nix_category "$k") "* ]] && continue
+        NIX_KEPT+=("$l")
+    done < <(sudo_ cat "$NIX_SYS_FILE")
+    if [[ ${#NIX_KEPT[@]} -gt 0 ]]; then
+        local users; users="$(printf '%s\n' "${NIX_KEPT[@]}" | sed -n 's/^users\.users\."\{0,1\}\([^".]*\)"\{0,1\} = .*/\1/p' | paste -sd' ' -)"
+        sub "Keeping ${#NIX_KEPT[@]} setting(s) from earlier runs${users:+ (users: $users)}"
+    fi
+}
+
+# Users the module declares must exist after the switch
+nixos_verify_users() {
+    local u
+    for u in $(sudo_ sed -n 's/^[[:space:]]*users\.users\."\{0,1\}\([^".]*\)"\{0,1\} = .*/\1/p' "$NIX_SYS_FILE" 2>/dev/null); do
+        if id "$u" >/dev/null 2>&1; then ok "User $u is present"
+        else warn "User $u is declared in $NIX_SYS_FILE but does not exist after the switch - check $1"; fi
+    done
+}
+
+# NixOS does not rename the RUNNING system on switch (only /etc/hostname,
+# which systemd reads at boot) - so set it now as well
+nixos_set_running_hostname() {
+    local short="${NEW_HOSTNAME%%.*}"
+    [[ "$(hostname)" == "$short" || "$(hostname)" == "$NEW_HOSTNAME" ]] && return 0
+    sudo_ hostnamectl --transient set-hostname "$short" >/dev/null 2>&1 && return 0
+    sudo_ hostname "$short" >/dev/null 2>&1 && return 0
+    printf '%s' "$short" | sudo_ tee /proc/sys/kernel/hostname >/dev/null 2>&1
+}
+
 NIX_STATE=""   # ok | failed | background | manual | dry ("" = nothing for NixOS)
 nixos_apply() {
     [[ ${#NIX_PARTS[@]} -gt 0 ]] || return 0
@@ -891,6 +952,11 @@ nixos_apply() {
     local body l
     NIX_STATE=failed
     body="$SYS_TAG"$'\n# Imported from configuration.nix. Delete the import line to undo.\n{ lib, ... }:\n{\n'
+    nixos_keep_old
+    if [[ ${#NIX_KEPT[@]} -gt 0 ]]; then
+        body+=$'  # kept from earlier runs\n'
+        for l in "${NIX_KEPT[@]}"; do body+="  $l"$'\n'; done
+    fi
     for l in "${NIX_PARTS[@]}"; do body+="  $l"$'\n'; done
     body+=$'}\n'
     printf '%s' "$body" > "$WORKDIR/module.nix"
@@ -966,9 +1032,15 @@ nixos_apply() {
         nixos_check_ssh
         SYS_NOTES+=("SSH: ssh $TARGET_USER@<this-host>  (root login off, passwords: ${SSH_NOTE_PW:-yes})")
     fi
+    nixos_verify_users "${log:-/var/log/dotfiles-nixish-rebuild.log}"
     if $DO_HOST; then
-        [[ "$(hostname)" == "${NEW_HOSTNAME%%.*}" || "$(hostname)" == "$NEW_HOSTNAME" ]] && ok "Hostname is now $(hostname)" \
-            || warn "Hostname is still $(hostname) - it may need a reboot"
+        nixos_set_running_hostname
+        if [[ "$(hostname)" == "${NEW_HOSTNAME%%.*}" || "$(hostname)" == "$NEW_HOSTNAME" ]]; then
+            ok "Hostname is now $(hostname) (running system and /etc/hostname)"
+        else
+            warn "Saved in the NixOS config, but the running hostname is still $(hostname) - it changes at the next reboot"
+        fi
+        grep -qsx lxc /run/systemd/container && info "Proxmox LXC: also set it in Proxmox (CT > Options > Hostname, or: pct set <CTID> --hostname ${NEW_HOSTNAME%%.*}) so the GUI shows the same name"
         SYS_NOTES+=("Hostname: $NEW_HOSTNAME")
     fi
     if [[ "$(net_backend)" == nixos ]] && { $DO_NET || $DO_DNS; }; then sleep 3; verify_network; fi

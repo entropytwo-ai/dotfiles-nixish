@@ -108,6 +108,9 @@ Safety:
   wins over the image's `50-eth0` DHCP unit.
 - NixOS: a missing imported file such as `./incus.nix` (Incus images on
   Proxmox) is recreated as a small stub so `nixos-rebuild` can run.
+- NixOS: settings from earlier runs stay in the generated module; a run
+  only replaces what it changes. (NixOS deletes a user that is no longer
+  declared, so dropping one would remove the account.)
 - NixOS rollback only undoes this run: files it created are removed,
   files it changed are restored, other files are never touched. It also
   tells you if the config was already broken before this run.
