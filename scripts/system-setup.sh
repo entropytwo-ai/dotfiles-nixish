@@ -423,15 +423,13 @@ update_etc_hosts() {  # point the 127.0.1.1 line at the new name, drop the old o
 setup_hostname() {
     local old short="${NEW_HOSTNAME%%.*}"
     old="$(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null)"
+    NIX_OLD_HOSTNAME="$old"
     step "Changing the hostname: ${old:-?} → $NEW_HOSTNAME"
 
     if $IS_NIXOS; then
         NIX_PARTS+=("# hostname" "networking.hostName = lib.mkForce $(nix_str "$short");")
         [[ "$short" != "$NEW_HOSTNAME" ]] && NIX_PARTS+=("networking.domain = lib.mkForce $(nix_str "${NEW_HOSTNAME#*.}");")
         sub "Added to the NixOS module: networking.hostName = \"$short\""
-        if [[ -f /etc/nixos/flake.nix ]] && grep -q "nixosConfigurations\.\"\?$old\"\?" /etc/nixos/flake.nix 2>/dev/null; then
-            warn "Your flake names this machine nixosConfigurations.$old. After the rename, plain 'nixos-rebuild switch' looks for '$short' - use 'nixos-rebuild switch --flake /etc/nixos#$old' or rename it in flake.nix."
-        fi
         return 0
     fi
 
@@ -961,6 +959,83 @@ nixos_set_running_hostname() {
     printf '%s' "$short" | sudo_ tee /proc/sys/kernel/hostname >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------- rebuild target
+# Plain `nixos-rebuild` on a flake system builds nixosConfigurations.<RUNNING
+# hostname>. Once the hostname changes, that name no longer exists and every
+# rebuild fails - so always name the configuration explicitly.
+NIX_REBUILD_ARGS=()
+NIX_FLAKE_ATTR=""
+nix_flakes() { sudo_ nix --extra-experimental-features 'nix-command flakes' "$@"; }
+
+nixos_flake_attr() {  # pick nixosConfigurations.<attr> in /etc/nixos/flake.nix
+    local names n cur
+    if [[ -n "${DOTFILES_FLAKE_ATTR:-}" ]]; then NIX_FLAKE_ATTR="$DOTFILES_FLAKE_ATTR"; return 0; fi
+    names="$(nix_flakes eval --json /etc/nixos#nixosConfigurations --apply builtins.attrNames 2>"$WORKDIR/flake-eval.log" \
+             | tr -d '[]"' | tr ',' ' ')" || names=""
+    if [[ -z "${names// /}" ]]; then
+        warn "Could not list nixosConfigurations in /etc/nixos/flake.nix: $(grep -m1 -i error "$WORKDIR/flake-eval.log" || tail -1 "$WORKDIR/flake-eval.log")"
+        return 1
+    fi
+    cur="$(hostname 2>/dev/null)"
+    for n in "$cur" "${cur%%.*}" "${NIX_OLD_HOSTNAME:-}" "${NIX_OLD_HOSTNAME%%.*}" "${NEW_HOSTNAME%%.*}"; do
+        [[ -n "$n" && " $names " == *" $n "* ]] && { NIX_FLAKE_ATTR="$n"; return 0; }
+    done
+    read -ra n <<<"$names"
+    if [[ ${#n[@]} -eq 1 ]]; then NIX_FLAKE_ATTR="${n[0]}"; return 0; fi
+    warn "Your flake has several configurations (${names}) and none is named like this host ($cur). Re-run with DOTFILES_FLAKE_ATTR=<name> set."
+    return 1
+}
+
+# Root has no 'nixos' channel (common in Proxmox LXC containers): every
+# <nixpkgs/...> import fails and nothing can build. Add the channel that
+# matches the running NixOS release - what the Proxmox docs ask you to do.
+nixos_ensure_channel() {
+    sudo_ nix-instantiate --eval -E '<nixpkgs/nixos>' >/dev/null 2>&1 && return 0
+    [[ -n "$(sudo_ nix-channel --list 2>/dev/null)" ]] && { sub "root has a channel but <nixpkgs> is not found - trying nix-channel --update"; sudo_ nix-channel --update >"$WORKDIR/chan.log" 2>&1; return 0; }
+    local ver chan
+    ver="$(nixos-version 2>/dev/null | grep -oE '^[0-9]{2}\.[0-9]{2}(pre)?')"
+    if [[ -z "$ver" || "$ver" == *pre ]]; then chan=nixos-unstable; else chan="nixos-$ver"; fi
+    if dry; then sub "[dry-run] would add the missing root channel: nix-channel --add https://nixos.org/channels/$chan nixos && nix-channel --update"; return 0; fi
+    sub "root has no NixOS channel, so nixos-rebuild cannot find <nixpkgs> - adding $chan (matches this system)"
+    if sudo_ nix-channel --add "https://nixos.org/channels/$chan" nixos && sudo_ nix-channel --update >"$WORKDIR/chan.log" 2>&1; then
+        ok "Added the root channel 'nixos' -> $chan"
+    else
+        warn "Could not add the $chan channel: $(tail -1 "$WORKDIR/chan.log"). Run: sudo nix-channel --add https://nixos.org/channels/$chan nixos && sudo nix-channel --update"
+        return 1
+    fi
+}
+
+nixos_preflight() {
+    NIX_REBUILD_ARGS=()
+    if [[ -f /etc/nixos/flake.nix ]]; then
+        nixos_flake_attr || return 1
+        NIX_REBUILD_ARGS=(--flake "/etc/nixos#$NIX_FLAKE_ATTR")
+        sub "Flake system: building /etc/nixos#$NIX_FLAKE_ATTR (named explicitly, so a new hostname cannot break it)"
+    else
+        nixos_ensure_channel || return 1
+    fi
+}
+
+nixos_rebuild() { sudo_ nixos-rebuild "$@" ${NIX_REBUILD_ARGS[@]+"${NIX_REBUILD_ARGS[@]}"}; }
+
+# explain the usual causes of a failed build in plain words
+nixos_diagnose() {  # nixos_diagnose <log>
+    local f="$1"
+    if grep -qE "was not found in the Nix search path|file 'nixos-config' was not found" "$f"; then
+        info "Cause: root has no usable NixOS channel. Fix: sudo nix-channel --add https://nixos.org/channels/nixos-<release> nixos && sudo nix-channel --update"
+    elif grep -qE "does not provide attribute.*nixosConfigurations" "$f"; then
+        info "Cause: the flake has no nixosConfigurations entry with that name. Set DOTFILES_FLAKE_ATTR=<name> (see: nix flake show /etc/nixos)"
+    elif grep -qiE "is not tracked by Git|does not exist.*/etc/nixos" "$f"; then
+        info "Cause: a file in /etc/nixos is not tracked by git (flakes only see tracked files). Fix: sudo git -C /etc/nixos add -A"
+    elif grep -qiE "No space left on device" "$f"; then
+        info "Cause: the disk is full. Free space with: sudo nix-collect-garbage -d"
+    elif grep -qiE "unable to download|Could not resolve host|Couldn't resolve host|SSL connect error|timed out" "$f"; then
+        info "Cause: downloads failed - check the network/DNS (try: curl -I https://cache.nixos.org)"
+    elif grep -qE "networking.hostName.*(not of type|does not match)|is not of type .*hostname" "$f"; then
+        info "Cause: invalid hostname - NixOS allows letters, digits and '-' only (no dots in networking.hostName)"
+    fi
+}
+
 NIX_STATE=""   # ok | failed | background | manual | dry ("" = nothing for NixOS)
 nixos_apply() {
     [[ ${#NIX_PARTS[@]} -gt 0 ]] || return 0
@@ -983,6 +1058,10 @@ nixos_apply() {
         *) sub "Could not run nix-instantiate --parse - nixos-rebuild will check the module" ;;
     esac
     nixos_check_imports || { nixos_undo; return 1; }
+    if ! nixos_preflight; then
+        warn "nixos-rebuild cannot run on this system yet - nothing changed. Not applied: $(nixos_not_applied)"
+        nixos_undo; return 1
+    fi
     printf '%s' "$body" | sys_write "$NIX_SYS_FILE" 644 || { nixos_undo; return 1; }
     if [[ -f /etc/nixos/flake.nix ]] && ! grep -q 'configuration\.nix' /etc/nixos/flake.nix; then
         warn "Your flake.nix does not use configuration.nix - add ./dotfiles-nixish-system.nix to its modules list, then run: sudo nixos-rebuild switch"
@@ -995,14 +1074,14 @@ nixos_apply() {
     fi
     if dry; then sub "[dry-run] would run: nixos-rebuild switch"; NIX_STATE=dry; return 0; fi
     if $DROP_RISK; then
-        sudo_ sh -c "setsid nohup nixos-rebuild switch >$NET_LOG 2>&1 </dev/null &"
+        sudo_ sh -c "setsid nohup nixos-rebuild switch ${NIX_REBUILD_ARGS[*]} >$NET_LOG 2>&1 </dev/null &"
         ok "nixos-rebuild switch is running in the background (log: $NET_LOG) - your SSH session will drop"
         NIX_STATE=background; return 0
     fi
     sub "Running nixos-rebuild switch (this can take a few minutes)..."
     local log=/var/log/dotfiles-nixish-rebuild.log rc=0 sys_before sys_after f
     sys_before=$(readlink -f /run/current-system 2>/dev/null)
-    sudo_ nixos-rebuild switch >"$WORKDIR/rebuild.log" 2>&1 || rc=$?
+    nixos_rebuild switch >"$WORKDIR/rebuild.log" 2>&1 || rc=$?
     sys_after=$(readlink -f /run/current-system 2>/dev/null)
     [[ $rc -ne 0 ]] && log="$(keep_log "$WORKDIR/rebuild.log" "$log")"
     if [[ $rc -eq 0 ]]; then
@@ -1027,18 +1106,30 @@ nixos_apply() {
         sub "Errors:"
         { grep -E '^[[:space:]]*error:' "$WORKDIR/rebuild.log" || tail -3 "$WORKDIR/rebuild.log"; } \
             | sed 's/^[[:space:]]*//' | awk '!seen[$0]++' | head -5 | sed 's/^/        /'
+        nixos_diagnose "$WORKDIR/rebuild.log"
         sub "Undoing the config edits"
         # keep stubs for missing imports during the check: without them the old
         # config fails for that reason alone, which says nothing about it
         for f in /etc/nixos/configuration.nix "$NIX_SYS_FILE"; do restore_backup "$f"; done
         sub "Checking whether the configuration as it was before this run builds..."
-        if sudo_ nixos-rebuild dry-build >"$WORKDIR/dry.log" 2>&1; then
+        if nixos_rebuild dry-build >"$WORKDIR/dry.log" 2>&1; then
             info "It does - so the new settings caused the failure. Please report it with $log"
+        elif sudo_ test -s "$NIX_SYS_FILE" && grep -q 'dotfiles-nixish-system\.nix' /etc/nixos/configuration.nix 2>/dev/null \
+             && sudo_ cp -p "$NIX_SYS_FILE" "$WORKDIR/old-module.nix" \
+             && printf '%s\n{ ... }: { }\n' "$SYS_TAG" | sudo_ tee "$NIX_SYS_FILE" >/dev/null \
+             && nixos_rebuild dry-build >"$WORKDIR/dry2.log" 2>&1; then
+            sudo_ tee "$NIX_SYS_FILE" < "$WORKDIR/old-module.nix" >/dev/null
+            local dlog; dlog="$(keep_log "$WORKDIR/dry.log" /var/log/dotfiles-nixish-dry-build.log)"
+            warn "A setting saved by an EARLIER dotfiles-nixish run breaks the build (your own configuration builds without $NIX_SYS_FILE). Remove the bad line there or re-run with the setting changed. Log: $dlog"
+            { grep -E '^[[:space:]]*error:' "$WORKDIR/dry.log" || tail -3 "$WORKDIR/dry.log"; } \
+                | sed 's/^[[:space:]]*//' | awk '!seen[$0]++' | head -5 | sed 's/^/        /'
         else
+            [[ -f "$WORKDIR/old-module.nix" ]] && sudo_ tee "$NIX_SYS_FILE" < "$WORKDIR/old-module.nix" >/dev/null
             local dlog; dlog="$(keep_log "$WORKDIR/dry.log" /var/log/dotfiles-nixish-dry-build.log)"
             warn "Your NixOS configuration did not build before this run either ('sudo nixos-rebuild dry-build' fails). Fix it first, then re-run. Log: $dlog"
             { grep -E '^[[:space:]]*error:' "$WORKDIR/dry.log" || tail -3 "$WORKDIR/dry.log"; } \
                 | sed 's/^[[:space:]]*//' | awk '!seen[$0]++' | head -5 | sed 's/^/        /'
+            nixos_diagnose "$WORKDIR/dry.log"
         fi
         for f in "${NIX_STUBS[@]}"; do restore_backup "$f"; done
         return 1

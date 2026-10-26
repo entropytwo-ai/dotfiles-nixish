@@ -114,7 +114,16 @@ Safety:
   declared, so dropping one would remove the account.)
 - NixOS rollback only undoes this run: files it created are removed,
   files it changed are restored, other files are never touched. It also
-  tells you if the config was already broken before this run.
+  tells you if the config was already broken before this run, or if a
+  setting saved by an earlier run is the cause, and names the likely
+  reason (missing channel, flake name, full disk, network).
+- NixOS + flakes: the build always names the configuration
+  (`--flake /etc/nixos#<name>`), so a hostname change can't break later
+  rebuilds. With several configurations and none named like the host, set
+  `DOTFILES_FLAKE_ATTR=<name>`.
+- NixOS without flakes: if root has no `nixos` channel (common in Proxmox
+  LXC containers), the channel matching your release is added first,
+  because `nixos-rebuild` can't find `<nixpkgs>` without it.
 
 
 ## 📦 What it installs

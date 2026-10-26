@@ -3,7 +3,32 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
-## 2026-10-25: One package list for every OS (latest)
+## 2026-10-26: NixOS rebuilds that failed for reasons outside your config
+
+Fixes "nixos-rebuild failed to build" followed by "Your NixOS configuration
+did not build before this run either" when changing the hostname.
+
+- **Flakes + hostname (bug):** plain `nixos-rebuild` builds
+  `nixosConfigurations.<running hostname>`. Once a run renamed the host,
+  that name no longer existed, so every later rebuild failed, and the
+  installer blamed your config. Now the configuration is always named
+  explicitly (`--flake /etc/nixos#<name>`): the one matching the current or
+  old hostname, or the only one. `DOTFILES_FLAKE_ATTR=<name>` picks one
+  when there are several.
+- **No root channel (Proxmox LXC):** when `<nixpkgs>` can't be found and
+  root has no channel, the `nixos` channel matching the running release is
+  added before building (`--dry-run` only shows it).
+- **Checked before anything changes:** if nixos-rebuild can't run at all,
+  nothing is written, and the warning says so.
+- **Better blame:** when the old config doesn't build either, the
+  installer tries it once without its own generated module. If that builds,
+  it says a setting saved by an EARLIER dotfiles-nixish run is the cause,
+  instead of "your configuration".
+- **Plain-language causes** for failed builds: missing channel, unknown
+  flake configuration, untracked file in a flake, full disk,
+  network/DNS, invalid hostname.
+
+## 2026-10-25: One package list for every OS
 
 - **`packages/package_list.txt` is now the single real package list.** It
   used to be for reference only: the tools were hard-coded in `install.sh`
