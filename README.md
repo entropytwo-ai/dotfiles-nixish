@@ -7,6 +7,28 @@
 > Works on regular distros *and* NixOS (with or without flakes).
 
 
+---
+
+## Table of Contents
+
+- [🚀 One-liner install](#-one-liner-install)
+- [🛠 System settings](#-system-settings)
+- [📦 What it installs](#-what-it-installs)
+- [➕ Adding your own packages](#-adding-your-own-packages)
+- [⚙️ What it configures](#-what-it-configures)
+  - [xtree](#xtree)
+  - [~/.bashrc](#bashrc)
+  - [~/.zshrc](#zshrc)
+  - [Safety](#safety)
+- [❄️ NixOS (with or without flakes)](#-nixos-with-or-without-flakes)
+  - [Declarative option (configuration.nix)](#declarative-option-configurationnix)
+- [🔄 Updating](#-updating)
+- [✂️ Only the files your OS needs](#-only-the-files-your-os-needs)
+- [🧩 Manual / partial use](#-manual--partial-use)
+- [🗂 Layout](#-layout)
+
+---
+
 ## 🚀 One-liner install
 
 ```bash
