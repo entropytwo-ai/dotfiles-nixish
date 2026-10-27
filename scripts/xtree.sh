@@ -54,6 +54,16 @@ set_color_scheme() {
     COLOR_FILE=$(tput setaf 1) # Red
     COLOR_BOLD_FILE=$(tput bold; tput setaf 1) # Bold Red
     COLOR_WHITE=$(tput setaf 7) # White
+  elif [ "$scheme" == "ghost" ]; then
+    COLOR_PERMISSIONS=$(tput setaf 8) # Grey
+    COLOR_SIZE=$(tput setaf 14) # Pale Cyan
+    COLOR_DIRECTORY=$(tput setaf 15) # Bright White
+    COLOR_BOLD_DIRECTORY=$(tput bold; tput setaf 15) # Bold Bright White
+    COLOR_OWNER_GROUP=$(tput setaf 8) # Grey
+    COLOR_MODIFIED=$(tput setaf 6) # Cyan
+    COLOR_FILE=$(tput setaf 7) # White
+    COLOR_BOLD_FILE=$(tput bold; tput setaf 7) # Bold White
+    COLOR_WHITE=$(tput bold; tput setaf 15) # Bold Bright White
   else
     COLOR_PERMISSIONS=$(tput setaf 5) # Default Purple
     COLOR_SIZE=$(tput setaf 3) # Default Yellow
@@ -82,6 +92,12 @@ print_ascii_art() {
     echo -e "${COLOR_WHITE} \\  ^  / ${COLOR_RESET}"
     echo -e "${COLOR_WHITE}  |||||  ${COLOR_RESET}"
     echo -e "${COLOR_WHITE}  |||||  ${COLOR_RESET}"
+  elif [ "$scheme" == "ghost" ]; then
+    echo -e "${COLOR_WHITE}  .-----.  ${COLOR_RESET}"
+    echo -e "${COLOR_WHITE} / o   o \\ ${COLOR_RESET}"
+    echo -e "${COLOR_WHITE}|    O    |${COLOR_RESET}"
+    echo -e "${COLOR_WHITE}|         |${COLOR_RESET}"
+    echo -e "${COLOR_WHITE} \\/\\/\\/\\/\\/ ${COLOR_RESET}"
   elif [ "$scheme" == "alternative" ]; then
     echo -e "${COLOR_BOLD_DIRECTORY}  /\\  ${COLOR_RESET}"
     echo -e "${COLOR_BOLD_DIRECTORY} /  \\ ${COLOR_RESET}"
@@ -94,7 +110,7 @@ print_ascii_art() {
 
 # Function to select a random theme
 select_random_theme() {
-  local themes=("default" "alternative" "christmas" "halloween")
+  local themes=("default" "alternative" "christmas" "halloween" "ghost")
   local random_index=$((RANDOM % ${#themes[@]}))
   echo "${themes[$random_index]}"
 }
@@ -277,7 +293,7 @@ show_usage() {
   printf "  -%s\t\t%s\n" "$FLAG_SHOW_USERGROUP" "Show owner and group"
   printf "  -%s\t\t%s\n" "$FLAG_INCLUDE_HIDDEN" "Include hidden files and directories"
   printf "  -%s csv_file\t%s\n" "$FLAG_EXPORT_CSV" "Export output to a CSV file"
-  printf "  -%s scheme\t%s\n" "$FLAG_COLOR_SCHEME" "Select color scheme (default, alternative, christmas, halloween)"
+  printf "  -%s scheme\t%s\n" "$FLAG_COLOR_SCHEME" "Select color scheme (default, alternative, christmas, halloween, ghost)"
   printf "  -%s\t\t%s\n" "$FLAG_RANDOM_THEME" "Randomly select a color scheme"
   printf "  -%s\t\t%s\n" "$FLAG_SHOW_ACL" "Show ACL information"
   exit 1
