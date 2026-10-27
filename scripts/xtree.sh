@@ -160,8 +160,9 @@ print_entry_info() {
   local show_acl=$5
   local export_csv=$6
 
-  if [ ! -e "$path" ]; then
-    echo "Error: $path does not exist"
+  # -L: a broken symlink still exists as an entry (ls/stat/du describe the link itself).
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+    echo "Error: $path does not exist" >&2
     return
   fi
 
@@ -250,33 +251,45 @@ print_tree() {
     return
   fi
 
-  local entries
+  # nullglob: patterns that match nothing (e.g. no dotfiles, empty dir) expand
+  # to nothing instead of staying as literal "dir/.[!.]*" strings.
+  local restore_nullglob
+  restore_nullglob=$(shopt -p nullglob)
+  shopt -s nullglob
+  local candidates
   if [ "$include_hidden" == true ]; then
-    entries=("$base_dir"/{,.[!.],..?}*)
+    candidates=("$base_dir"/* "$base_dir"/.[!.]* "$base_dir"/..?*)
   else
-    entries=("$base_dir"/*)
+    candidates=("$base_dir"/*)
   fi
+  eval "$restore_nullglob"
+
+  # Keep only entries that will be shown so the last one gets "└──".
+  local entries=() candidate
+  for candidate in "${candidates[@]}"; do
+    if [ -d "$candidate" ] || { [ "$include_files" == true ] && { [ -e "$candidate" ] || [ -L "$candidate" ]; }; }; then
+      entries+=("$candidate")
+    fi
+  done
 
   local total_entries=${#entries[@]}
   local index=0
 
   for entry in "${entries[@]}"; do
-    if [ -d "$entry" ] || [ "$include_files" == true ]; then
-      local connector="├──"
+    local connector="├──"
+    if [ $((index + 1)) -eq $total_entries ]; then
+      connector="└──"
+    fi
+    if [ "$export_csv" != true ]; then
+      local output="${prefix}${connector} "
+      echo -ne "$output"
+    fi
+    print_entry_info "$entry" $show_permissions $show_datetime $show_usergroup $show_acl $export_csv
+    if [ -d "$entry" ]; then
       if [ $((index + 1)) -eq $total_entries ]; then
-        connector="└──"
-      fi
-      if [ "$export_csv" != true ]; then
-        local output="${prefix}${connector} "
-        echo -ne "$output"
-      fi
-      print_entry_info "$entry" $show_permissions $show_datetime $show_usergroup $show_acl $export_csv
-      if [ -d "$entry" ]; then
-        if [ $((index + 1)) -eq $total_entries ]; then
-          print_tree "$entry" $((indent_level + 1)) $max_depth "${prefix}    " $include_files $show_permissions $show_datetime $show_usergroup $show_acl $include_hidden $export_csv
-        else
-          print_tree "$entry" $((indent_level + 1)) $max_depth "${prefix}│   " $include_files $show_permissions $show_datetime $show_usergroup $show_acl $include_hidden $export_csv
-        fi
+        print_tree "$entry" $((indent_level + 1)) $max_depth "${prefix}    " $include_files $show_permissions $show_datetime $show_usergroup $show_acl $include_hidden $export_csv
+      else
+        print_tree "$entry" $((indent_level + 1)) $max_depth "${prefix}│   " $include_files $show_permissions $show_datetime $show_usergroup $show_acl $include_hidden $export_csv
       fi
     fi
     ((index++))
@@ -362,6 +375,10 @@ shift $((OPTIND - 1))
 # Check if a directory was provided
 if [ -z "$1" ]; then
   show_usage
+fi
+if [ ! -d "$1" ]; then
+  echo "Error: $1 is not a directory" >&2
+  exit 1
 fi
 
 # Print ASCII art based on the selected color scheme
