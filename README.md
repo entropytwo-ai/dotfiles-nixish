@@ -6,7 +6,6 @@
 > Set up a fresh Linux box the way I like it, with **one command**.
 > Works on regular distros *and* NixOS (with or without flakes).
 
-
 ---
 
 ## Table of Contents
@@ -15,15 +14,17 @@
 - [🛠 System settings](#-system-settings)
 - [📦 What it installs](#-what-it-installs)
 - [➕ Adding your own packages](#-adding-your-own-packages)
-- [⚙️ What it configures](#-what-it-configures)
+- [⚙️ What it configures](#️-what-it-configures)
   - [xtree](#xtree)
   - [~/.bashrc](#bashrc)
   - [~/.zshrc](#zshrc)
+  - [Aliases](#aliases)
+  - [History timestamps](#history-timestamps)
   - [Safety](#safety)
-- [❄️ NixOS (with or without flakes)](#-nixos-with-or-without-flakes)
+- [❄️ NixOS (with or without flakes)](#️-nixos-with-or-without-flakes)
   - [Declarative option (configuration.nix)](#declarative-option-configurationnix)
 - [🔄 Updating](#-updating)
-- [✂️ Only the files your OS needs](#-only-the-files-your-os-needs)
+- [✂️ Only the files your OS needs](#️-only-the-files-your-os-needs)
 - [🧩 Manual / partial use](#-manual--partial-use)
 - [🗂 Layout](#-layout)
 
@@ -255,7 +256,7 @@ A block between `# dotfiles-nixish BEGIN` and `# dotfiles-nixish END`:
   10000 entries, timestamps (`%m/%d/%y %T`), `LC_TIME=en_US.UTF-8`
   (the locale is generated if it's missing)
 - **Aliases:** `l` and `ll` (eza, falling back to exa, then ls), `la`,
-  `cowsays`, `xtree`, and `bat` on Debian
+  `cowsays`, `xtree`, and `bat` on Debian - see [Aliases](#aliases)
 - **Greeting:** every interactive shell shows `fastfetch` with a
   `fortune | cowsay` logo 🐄
 
@@ -263,6 +264,44 @@ A block between `# dotfiles-nixish BEGIN` and `# dotfiles-nixish END`:
 
 Only if zsh is installed. The same settings in zsh syntax
 (`setopt APPEND_HISTORY`, `SAVEHIST`, and so on).
+
+### Aliases
+
+Set in both `~/.bashrc` and `~/.zshrc` (and by the NixOS module when its
+shell settings are enabled):
+
+| Alias     | Runs                                                        | Notes |
+|-----------|-------------------------------------------------------------|-------|
+| `l`       | `eza -la --color=always --group-directories-first`          | Long list, hidden files included, folders first. Uses `exa`, then `ls`, if eza is missing |
+| `ll`      | `eza -a --color=always --group-directories-first`           | Short (grid) list, hidden files included. Same fallback as `l` |
+| `la`      | `ls -A`                                                     | Plain `ls`, hidden files without `.` and `..` |
+| `bat`     | `batcat`                                                    | Only where bat is installed as `batcat` (Debian/Ubuntu) |
+| `cowsays` | MOTD, then `fastfetch --logo <(fortune \| cowsay -W 30)`    | The login greeting on demand. The MOTD part runs only where `/etc/update-motd.d` exists (Ubuntu) |
+| `xtree`   | `/usr/local/bin/xtree`                                      | Only when installed there. Otherwise `xtree` comes from `PATH` (`~/.local/bin` or the NixOS module) |
+| `history` | `fc -t "%m/%d/%y %T" -l 1`                                  | **zsh only:** whole history with timestamps, like bash's `history` |
+
+Check what is active in your shell with `alias`.
+
+### History timestamps
+
+Every command is saved with the date and time it ran, shown as
+`MM/DD/YY HH:MM:SS` (24-hour, `%m/%d/%y %T`). Example `history` output:
+
+```text
+    1  10/26/26 16:02:02 cd ~/projects
+    2  10/26/26 16:02:21 git status
+    3  10/26/26 16:03:30 sudo apt update
+```
+
+- **bash:** `HISTTIMEFORMAT='%m/%d/%y %T '`. In `~/.bash_history`, each
+  command has a `#<unix-time>` line above it (for example `#1793030522`).
+- **zsh:** `setopt EXTENDED_HISTORY` stores the time
+  (`: 1793030522:0;cd ~/projects` in `~/.zsh_history`). The `history`
+  alias above prints the same format as bash.
+- Commands typed before the installer ran have no saved time, so they all
+  show the time the history file was loaded.
+- `history 20` shows the last 20 commands in bash. In zsh, use
+  `fc -t "%m/%d/%y %T" -l -20`.
 
 ### Safety
 

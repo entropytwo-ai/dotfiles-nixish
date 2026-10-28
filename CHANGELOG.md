@@ -3,6 +3,13 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-10-28: README contents, alias list, history example
+
+- Table of contents at the top of the README.
+- **Aliases** section: every alias with what it runs and when it is set.
+- **History timestamps** section: example `history` output
+  (`10/26/26 16:02:02 git status`) and how bash and zsh store the times.
+
 ## 2026-10-26: NixOS rebuilds that failed for reasons outside your config
 
 Fixes "nixos-rebuild failed to build" followed by "Your NixOS configuration
