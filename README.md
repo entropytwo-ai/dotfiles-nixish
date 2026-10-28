@@ -92,6 +92,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixis
 
 When it finishes, run `source ~/.bashrc` or open a new terminal.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 
 ## 🛠 System settings
 
@@ -173,6 +175,8 @@ Safety:
   LXC containers), the channel matching your release is added first,
   because `nixos-rebuild` can't find `<nixpkgs>` without it.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 
 ## 📦 What it installs
 
@@ -235,6 +239,8 @@ Notes:
 - A package that fails to install only gives a warning; the installer
   keeps going.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 
 ## ➕ Adding your own packages
 
@@ -284,6 +290,8 @@ Three ways to use your own list:
   or an `https://` URL).
 - **Fork the repo**, edit the list there, and point the one-liner at your
   fork: `DOTFILES_REPO=https://github.com/you/dotfiles-nixish.git bash <(curl -fsSL https://raw.githubusercontent.com/you/dotfiles-nixish/main/install.sh)`.
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
 
 
 ## ⚙️ What it configures
@@ -435,6 +443,8 @@ Every command is saved with the date and time it ran, shown as
 - If the result would fail `bash -n` / `zsh -n`, the file is left
   unchanged.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 
 ## ❄️ NixOS (with or without flakes)
 
@@ -525,6 +535,8 @@ nix profile install github:entropytwo-ai/dotfiles-nixish
 > and `users.users.<you>.shell = pkgs.zsh;`. A zsh installed into your
 > user profile isn't in `/etc/shells`, so it can't be your login shell.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 
 ## 🔄 Updating
 
@@ -535,6 +547,8 @@ git -C ~/.dotfiles-nixish pull && bash ~/.dotfiles-nixish/install.sh
 Running the one-liner again does the same thing. The managed block is
 **replaced in place**, never duplicated. Put your own customizations
 outside the BEGIN/END markers.
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
 
 
 ## ✂️ Only the files your OS needs
@@ -560,6 +574,8 @@ How it's done:
 To get every file back, re-run with `--keep-all`. GitHub always keeps the
 full repo.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 
 ## 🧩 Manual / partial use
 
@@ -573,6 +589,8 @@ source ~/.dotfiles-nixish/config/zshrc_append.sh     # zsh flavor
 # just xtree
 sudo install -m 755 ~/.dotfiles-nixish/scripts/xtree.sh /usr/local/bin/xtree
 ```
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
 
 
 ## 🗂 Layout
@@ -601,3 +619,5 @@ CHANGELOG.md                what each change added
 [badge-distros]: https://img.shields.io/badge/distros-Debian%20%7C%20Ubuntu%20%7C%20Fedora%20%7C%20RHEL%20%7C%20Arch%20%7C%20openSUSE%20%7C%20Alpine%20%7C%20NixOS-blue
 [badge-nixos]: https://img.shields.io/badge/NixOS-flakes%20%26%20no%20flakes-5277C3?logo=nixos&logoColor=white
 [badge-safe]: https://img.shields.io/badge/re--run-safe-success
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
