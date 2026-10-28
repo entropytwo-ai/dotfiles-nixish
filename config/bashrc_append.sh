@@ -21,15 +21,19 @@ HISTSIZE=10000
 HISTFILESIZE=10000
 export HISTTIMEFORMAT='%m/%d/%y %T '
 
-# --- Locale: en_US.UTF-8 ------------------------------------------------------
-# Only when the locale exists (else every program warns "cannot change locale").
+# --- Locale: the system default (set by the installer, default en_US.UTF-8) ---
+# Re-applied here because SSH clients often send their own LANG/LC_*. Only
+# used when it exists (else every program warns "cannot change locale");
 # musl/Alpine has no 'locale -a' and accepts any name.
-_loc=$(locale -a 2>/dev/null)
-if [ -z "$_loc" ] || printf '%s\n' "$_loc" | grep -qiE '^en_US\.utf-?8$'; then
-    export LANG=en_US.UTF-8
-    export LC_TIME=en_US.UTF-8
+_loc=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}LANG=["'"'"']\{0,1\}\([^"'"'"' ]*\).*/\2/p' \
+       /etc/default/locale /etc/locale.conf /etc/profile.d/00-dotfiles-nixish-locale.sh 2>/dev/null | head -n 1)
+case "$_loc" in ""|C|C.*|POSIX) _loc=en_US.UTF-8 ;; esac
+_have=$(locale -a 2>/dev/null | tr 'A-Z' 'a-z' | sed 's/utf-8/utf8/')
+if [ -z "$_have" ] || printf '%s\n' "$_have" | grep -qxF "$(printf '%s' "$_loc" | tr 'A-Z' 'a-z' | sed 's/utf-8/utf8/')"; then
+    export LANG="$_loc"
+    export LC_TIME="$_loc"
 fi
-unset _loc
+unset _loc _have
 
 # --- Aliases --------------------------------------------------------------------
 # eza replacement for ls (falls back to exa, then plain ls)

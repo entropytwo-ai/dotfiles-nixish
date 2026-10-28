@@ -840,7 +840,7 @@ nixos_check_imports() {
 nixos_not_applied() {  # list the settings that needed nixos-rebuild
     local l=()
     $DO_USER && l+=("user $NEW_USER (NixOS entry only - the account itself was created)")
-    $DO_SSH && l+=("SSH"); $DO_HOST && l+=("hostname")
+    $DO_SSH && l+=("SSH"); $DO_HOST && l+=("hostname"); $DO_LOCALE && l+=("locale")
     [[ "$(net_backend)" == nixos ]] && { $DO_NET && l+=("IP address"); $DO_DNS && l+=("DNS"); }
     local IFS=','; echo "${l[*]}" | sed 's/,/, /g'
 }
@@ -905,6 +905,7 @@ nix_category() {
         security.sudo.*)                                echo sudo ;;
         services.openssh.*)                             echo ssh ;;
         networking.hostName|networking.domain)          echo host ;;
+        i18n.*)                                         echo locale ;;
         networking.nameservers|networking.dhcpcd.extraConfig|systemd.network.networks.*.dns|systemd.network.networks.*.dhcpV4Config.UseDNS) echo dns ;;
         systemd.network.*|networking.interfaces.*|networking.defaultGateway) echo net ;;
         *)                                              echo other ;;
@@ -923,6 +924,7 @@ nixos_keep_old() {
     local touched=" " l k new_keys=" "
     $DO_SSH  && touched+="ssh "
     $DO_HOST && touched+="host "
+    $DO_LOCALE && touched+="locale "
     $DO_NET  && touched+="net "
     $DO_DNS  && touched+="dns "
     for l in "${NIX_PARTS[@]}"; do [[ "$l" == *" = "* && "$l" != \#* ]] && new_keys+="${l%% = *} "; done
@@ -1150,7 +1152,90 @@ nixos_apply() {
         grep -qsx lxc /run/systemd/container && info "Proxmox LXC: also set it in Proxmox (CT > Options > Hostname, or: pct set <CTID> --hostname ${NEW_HOSTNAME%%.*}) so the GUI shows the same name"
         SYS_NOTES+=("Hostname: $NEW_HOSTNAME")
     fi
+    if $DO_LOCALE; then
+        if grep -qs "LANG=$NEW_LOCALE" /etc/locale.conf; then ok "System locale is $NEW_LOCALE (i18n.defaultLocale) - log out and back in to use it"
+        else warn "i18n.defaultLocale = $NEW_LOCALE is in the config, but /etc/locale.conf does not show it yet"; fi
+        SYS_NOTES+=("Locale: $NEW_LOCALE - new logins")
+    fi
     if [[ "$(net_backend)" == nixos ]] && { $DO_NET || $DO_DNS; }; then sleep 3; verify_network; fi
+}
+
+# =============================================================================
+#  System locale (default en_US.UTF-8; the whole locale: LANG, no LC_* overrides)
+# =============================================================================
+loc_ok() { LC_ALL="$1" locale charmap 2>&1 | grep -qx 'UTF-8'; }   # usable, no "cannot set" warning
+
+locale_generate() {   # make <locale> available on glibc systems
+    local loc="$1" base="${1%%.*}" lang="${1%%_*}" mod="" line
+    [[ "$1" == *@* ]] && mod="@${1#*@}"
+    if $OPT_PACKAGES; then
+        pm_refresh
+        pkg_install_entry locales >/dev/null 2>&1   # the [locale] entry of the package list
+    fi
+    case "$PM" in
+        apt|pacman)
+            line="$base.UTF-8$mod UTF-8"
+            if sudo_ grep -qE "^#[[:space:]]*${line//./\\.}[[:space:]]*$" /etc/locale.gen 2>/dev/null; then
+                sudo_ sed -i "s|^#[[:space:]]*\(${line//./\\.}\)[[:space:]]*$|\1|" /etc/locale.gen
+            elif ! sudo_ grep -qxF "$line" /etc/locale.gen 2>/dev/null; then
+                printf '%s\n' "$line" | sudo_ tee -a /etc/locale.gen >/dev/null
+            fi
+            sudo_ locale-gen >/dev/null 2>&1
+            loc_ok "$loc" || sudo_ locale-gen "$loc" >/dev/null 2>&1 ;;   # Ubuntu takes names
+        dnf|yum) $OPT_PACKAGES && pm_install "glibc-langpack-$lang" >/dev/null 2>&1 ;;
+        zypper)  $OPT_PACKAGES && pm_install glibc-locale >/dev/null 2>&1 ;;
+    esac
+    # last resort on any glibc with locale sources
+    if ! loc_ok "$loc" && have localedef && [[ -e "/usr/share/i18n/locales/$base$mod" ]]; then
+        sudo_ localedef -i "$base$mod" -f UTF-8 "$loc" >/dev/null 2>&1
+    fi
+    loc_ok "$loc"
+}
+
+setup_locale() {
+    local loc="$NEW_LOCALE" cur f dropped
+    cur="$(cur_sys_locale)"
+    step "System locale: ${cur:-not set} → $loc$($LOCALE_AUTO && echo "  (default)")"
+    if $IS_NIXOS; then
+        NIX_PARTS+=("# locale" "i18n.defaultLocale = lib.mkForce $(nix_str "$loc");")
+        sub "Added to the NixOS module: i18n.defaultLocale = \"$loc\" (NixOS generates it)"
+        return 0
+    fi
+    # 1. the locale itself (musl/Alpine has no locale database: any name works)
+    if [[ "$PM" != apk ]] && ! loc_ok "$loc"; then
+        if dry; then sub "[dry-run] would generate the $loc locale"
+        else
+            sub "Generating the $loc locale..."
+            if locale_generate "$loc"; then ok "$loc is available"
+            else
+                warn "Could not generate $loc$($OPT_PACKAGES || echo " (--no-packages)") - the system locale stays ${cur:-not set}."
+                return 1
+            fi
+        fi
+    fi
+    # 2. the default for new logins, in the file this distro reads
+    case "$PM" in
+        apt) f=/etc/default/locale ;;
+        apk) f=/etc/profile.d/00-dotfiles-nixish-locale.sh ;;   # sourced after /etc/profile sets C.UTF-8
+        *)   f=/etc/locale.conf ;;
+    esac
+    dropped="$(sudo_ grep -sE '^[[:space:]]*(export[[:space:]]+)?(LC_[A-Z]+|LANGUAGE)=' "$f" | sed -E 's/^[[:space:]]*(export[[:space:]]+)?//' | paste -sd' ' -)"
+    if [[ "$PM" == apk ]]; then
+        printf '%s\nexport LANG=%s\n' "$SYS_TAG" "$loc" | sys_write "$f" 644 || return 1
+    else
+        # only LANG: other LC_* / LANGUAGE lines would keep parts of the old locale
+        printf '%s\nLANG=%s\n' "$SYS_TAG" "$loc" | sys_write "$f" 644 || return 1
+        [[ -n "$dropped" ]] && sub "Removed overrides so the whole locale is $loc: $dropped"
+        # tell systemd-localed too, so localectl agrees (absent in many containers)
+        if ! dry && have localectl; then sudo_ timeout 10 localectl set-locale "LANG=$loc" >/dev/null 2>&1 || true; fi
+    fi
+    if dry; then SYS_NOTES+=("Locale: $loc"); return 0; fi
+    if [[ "$(cur_sys_locale)" == "$loc" ]] && { [[ "$PM" == apk ]] || loc_ok "$loc"; }; then
+        ok "System locale is $loc ($f) - log out and back in to use it"
+        SYS_NOTES+=("Locale: $loc - new logins (check with: locale)")
+    else
+        warn "The system locale could not be set to $loc in $f"
+    fi
 }
 
 # =============================================================================
@@ -1161,6 +1246,7 @@ system_setup() {
     $DO_SSH  && setup_ssh
     $DO_HOST && setup_hostname
     if $DO_NET || $DO_DNS; then setup_network; fi
+    $DO_LOCALE && setup_locale
     nixos_apply
     apply_network
     # on NixOS the network only changes if nixos-rebuild did its job

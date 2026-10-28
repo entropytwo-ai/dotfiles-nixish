@@ -47,6 +47,8 @@ NIX_MODE=""        # "env" (channels, no flakes) or "profile" (flakes); auto-det
 DO_SSH=false; SSH_KEY=""; SSH_PASSWORDS=true
 DO_USER=false; NEW_USER=""; NEW_USER_PW=""
 NEW_HOSTNAME=""; NET_IFACE=""; NET_IP=""; NET_MASK=""; NET_GW=""; NET_DNS=""
+DO_LOCALE=false; NEW_LOCALE=""; LOCALE_AUTO=false; OPT_KEEP_LOCALE=false
+OPT_FIND_LOCALE=false; FIND_LOCALE_Q=""
 SYS_FLAGS=false
 
 usage() {
@@ -78,6 +80,14 @@ System settings:
   --gateway ADDR        default gateway
   --dns "A B"           DNS servers (space or comma separated)
   --iface NAME          network interface (default: the one with the default route)
+  --locale NAME         system locale (default when chosen: en_US.UTF-8),
+                        e.g. de_DE.UTF-8 - see --find-locale
+  --keep-locale         never change the system locale (by default a
+                        language-less C/POSIX locale becomes en_US.UTF-8)
+
+Locales:
+  --find-locale [TEXT]  search the locales this system can use by language,
+                        country or code (e.g. german, brazil, fr_CA) and exit
 
 Other:
   --menu | --no-menu    always / never show the menu
@@ -108,6 +118,10 @@ while [[ $# -gt 0 ]]; do
         --gateway) need_val "$@"; NET_GW="$2"; SYS_FLAGS=true; shift ;;
         --dns) need_val "$@"; NET_DNS="$2"; SYS_FLAGS=true; shift ;;
         --iface|--interface) need_val "$@"; NET_IFACE="$2"; shift ;;
+        --locale) need_val "$@"; NEW_LOCALE="$2"; SYS_FLAGS=true; shift ;;
+        --keep-locale) OPT_KEEP_LOCALE=true ;;
+        --find-locale) OPT_FIND_LOCALE=true
+                       if [[ $# -ge 2 && "$2" != -* ]]; then FIND_LOCALE_Q="$2"; shift; fi ;;
         --menu) OPT_MENU=yes ;;
         --no-menu) OPT_MENU=no ;;
         -y|--yes) OPT_YES=true ;;
@@ -227,6 +241,185 @@ valid_ipv6() { [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:.]+$ ]]; }
 valid_hostname() {
     [[ ${#1} -le 253 && "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ ]]
 }
+# ---------------------------------------------------------------- locales
+DEFAULT_LOCALE=en_US.UTF-8
+# Common locales with a readable name - used for searching where the system
+# has no locale descriptions (/usr/share/i18n/locales), e.g. Fedora or Alpine.
+LOCALE_TABLE='af_ZA|Afrikaans - South Africa
+ar_AE|Arabic - United Arab Emirates
+ar_EG|Arabic - Egypt
+ar_SA|Arabic - Saudi Arabia
+bg_BG|Bulgarian - Bulgaria
+bn_IN|Bengali - India
+ca_ES|Catalan - Spain
+cs_CZ|Czech - Czechia
+cy_GB|Welsh - United Kingdom
+da_DK|Danish - Denmark
+de_AT|German - Austria
+de_CH|German - Switzerland
+de_DE|German - Germany
+el_GR|Greek - Greece
+en_AU|English - Australia
+en_CA|English - Canada
+en_GB|English - United Kingdom
+en_IE|English - Ireland
+en_IN|English - India
+en_NZ|English - New Zealand
+en_US|English - United States
+en_ZA|English - South Africa
+es_AR|Spanish - Argentina
+es_CL|Spanish - Chile
+es_CO|Spanish - Colombia
+es_ES|Spanish - Spain
+es_MX|Spanish - Mexico
+es_US|Spanish - United States
+et_EE|Estonian - Estonia
+eu_ES|Basque - Spain
+fa_IR|Persian - Iran
+fi_FI|Finnish - Finland
+fil_PH|Filipino - Philippines
+fr_BE|French - Belgium
+fr_CA|French - Canada
+fr_CH|French - Switzerland
+fr_FR|French - France
+ga_IE|Irish - Ireland
+gl_ES|Galician - Spain
+he_IL|Hebrew - Israel
+hi_IN|Hindi - India
+hr_HR|Croatian - Croatia
+hu_HU|Hungarian - Hungary
+id_ID|Indonesian - Indonesia
+is_IS|Icelandic - Iceland
+it_CH|Italian - Switzerland
+it_IT|Italian - Italy
+ja_JP|Japanese - Japan
+ka_GE|Georgian - Georgia
+kk_KZ|Kazakh - Kazakhstan
+ko_KR|Korean - South Korea
+lt_LT|Lithuanian - Lithuania
+lv_LV|Latvian - Latvia
+ms_MY|Malay - Malaysia
+nb_NO|Norwegian Bokmal - Norway
+nl_BE|Dutch - Belgium
+nl_NL|Dutch - Netherlands
+nn_NO|Norwegian Nynorsk - Norway
+pl_PL|Polish - Poland
+pt_BR|Portuguese - Brazil
+pt_PT|Portuguese - Portugal
+ro_RO|Romanian - Romania
+ru_RU|Russian - Russia
+sk_SK|Slovak - Slovakia
+sl_SI|Slovenian - Slovenia
+sq_AL|Albanian - Albania
+sr_RS|Serbian - Serbia
+sv_FI|Swedish - Finland
+sv_SE|Swedish - Sweden
+sw_KE|Swahili - Kenya
+ta_IN|Tamil - India
+th_TH|Thai - Thailand
+tr_TR|Turkish - Turkey
+uk_UA|Ukrainian - Ukraine
+ur_PK|Urdu - Pakistan
+vi_VN|Vietnamese - Vietnam
+zh_CN|Chinese (simplified) - China
+zh_HK|Chinese (traditional) - Hong Kong
+zh_SG|Chinese (simplified) - Singapore
+zh_TW|Chinese (traditional) - Taiwan'
+
+# de_DE / de_de.utf8 / de_DE.UTF-8 -> de_DE.UTF-8   (only UTF-8 locales are offered)
+loc_norm() {
+    local s="$1" base mod="" ll cc
+    s="${s#"${s%%[![:space:]]*}"}"; s="${s%%[[:space:]]*}"
+    [[ "$s" == *@* ]] && { mod="@${s#*@}"; mod="${mod%%.*}"; s="${s%%@*}"; }
+    [[ "$mod" == @euro ]] && return 1   # Latin-9 variants, not UTF-8
+    base="${s%%.*}"
+    [[ "$base" =~ ^([A-Za-z]{2,3})_([A-Za-z]{2})$ ]] || return 1
+    ll="${BASH_REMATCH[1],,}"; cc="${BASH_REMATCH[2]^^}"
+    printf '%s_%s.UTF-8%s' "$ll" "$cc" "$mod"
+}
+loc_key() { local s="${1,,}"; s="${s//utf-8/utf8}"; printf '%s' "$s"; }   # for comparing
+
+# The system default locale (LANG) as configured for new logins
+cur_sys_locale() {
+    local f v
+    for f in /etc/default/locale /etc/locale.conf /etc/profile.d/00-dotfiles-nixish-locale.sh; do
+        v="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}LANG=["'\'']\{0,1\}\([^"'\'' ]*\).*/\2/p' "$f" 2>/dev/null | tail -n 1)"
+        [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
+    done
+    have localectl && v="$(localectl status 2>/dev/null | sed -n 's/.*LANG=\([^ ]*\).*/\1/p' | head -1)"
+    printf '%s' "${v:-}"
+}
+sys_locale_label() { local l; l="$(cur_sys_locale)"; printf '%s' "${l:-not set}"; }
+loc_is_plain() { case "$1" in ""|C|C.*|POSIX) return 0 ;; esac; return 1; }   # image default, no language
+
+loc_installed() {   # locales that can be used right now (normalized)
+    local l n
+    while IFS= read -r l; do n="$(loc_norm "$l")" && [[ "$(loc_key "$l")" == *utf8* ]] && printf '%s\n' "$n"; done < <(locale -a 2>/dev/null)
+}
+# every locale this system can generate/install: "name|description|installed?"
+loc_catalog() {
+    local inst gen l
+    inst="$(loc_installed | sort -u)"
+    gen="$( { sed -n 's/^#\{0,1\} *\([A-Za-z_]*\.UTF-8[^ ]*\) UTF-8.*/\1/p' /usr/share/i18n/SUPPORTED /etc/locale.gen 2>/dev/null
+              for l in /usr/share/i18n/locales/*_*; do [[ -f "$l" ]] && printf '%s.UTF-8\n' "${l##*/}"; done
+              printf '%s\n' "$LOCALE_TABLE" | sed 's/|.*/.UTF-8/'
+              printf '%s\n' "$inst"; } | while IFS= read -r l; do loc_norm "$l" && echo; done | sort -u)"
+    { grep -H -m1 '^title' /usr/share/i18n/locales/*_* 2>/dev/null | sed -n 's#^.*/\([^/:]*\):title[[:space:]]*"\(.*\)"#T|\1|\2#p'
+      printf '%s\n' "$LOCALE_TABLE" | sed 's/^/B|/'
+      sed 's/^/I|/' <<<"$inst"
+      sed 's/^/N|/' <<<"$gen"; } \
+    | awk -F'|' '$1 == "T" { t[$2] = $3 } $1 == "B" { b[$2] = $3 } $1 == "I" { i[$2] = 1 }
+                 $1 == "N" && $2 != "" { base = $2; sub(/[.@].*/, "", base); d = (base in t) ? t[base] : b[base]
+                                         print $2 "|" d "|" (($2 in i) ? "installed" : "") "|" b[base] }'
+}
+# loc_known <name>: 0 = installed or can be generated here, 1 = unknown
+loc_known() { loc_catalog | cut -d'|' -f1 | grep -qxF "$1"; }
+
+# loc_search <text>: matches by code, language or country (case-insensitive)
+loc_search() {
+    local q="${1,,}"
+    loc_catalog | awk -F'|' -v q="$q" 'q == "" || index(tolower($1 " " $2 " " $4), q) {print}'
+}
+loc_print() {   # numbered list from loc_search output on stdin
+    awk -F'|' '{ printf "   %3d) %-22s %s%s\n", NR, $1, $2, ($3 == "installed" ? "  (installed)" : "") }'
+}
+
+# Interactive search. Sets PICKED_LOCALE; returns 1 if the user went back.
+locale_finder() {
+    local q="${1:-}" res n pick
+    while true; do
+        if [[ -z "$q" ]]; then
+            ask q "Search by language, country or code (e.g. german, brazil, fr_CA; Enter = back)"
+            [[ -z "$q" ]] && return 1
+        fi
+        res="$(loc_search "$q")"
+        n=$(grep -c . <<<"$res")
+        if [[ -z "$res" ]]; then
+            printf '   %sNo locale matches "%s".%s\n' "$C_Y" "$q" "$C_0"; q=""; continue
+        fi
+        printf '\n   %s%d match(es) for "%s":%s\n' "$C_B" "$n" "$q" "$C_0"
+        head -40 <<<"$res" | loc_print
+        (( n > 40 )) && printf '   ... %d more - type a longer search\n' $((n - 40))
+        ask pick "Number to choose, new search text, or Enter to go back"
+        if [[ -z "$pick" ]]; then return 1
+        elif [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= n && pick <= 40 )); then
+            PICKED_LOCALE="$(sed -n "${pick}p" <<<"$res" | cut -d'|' -f1)"; return 0
+        else q="$pick"; fi
+    done
+}
+
+# Ask for the system locale (menu). Sets NEW_LOCALE.
+ask_locale() {
+    local a n
+    while true; do
+        ask a "Locale - Enter keeps the default, ? searches" "${NEW_LOCALE:-$DEFAULT_LOCALE}"
+        if [[ "$a" == "?" ]]; then locale_finder "" && { NEW_LOCALE="$PICKED_LOCALE"; ok "Chosen: $NEW_LOCALE"; return 0; }; continue; fi
+        if n="$(loc_norm "$a")" && loc_known "$n"; then NEW_LOCALE="$n"; return 0; fi
+        printf '   %s"%s" is not a locale this system knows - searching for it:%s\n' "$C_Y" "$a" "$C_0"
+        locale_finder "${a%%.*}" && { NEW_LOCALE="$PICKED_LOCALE"; ok "Chosen: $NEW_LOCALE"; return 0; }
+    done
+}
+
 ip2int() { local a b c d; IFS=. read -r a b c d <<<"$1"; echo $(( (10#$a << 24) | (10#$b << 16) | (10#$c << 8) | 10#$d )); }
 int2ip() { echo "$(( ($1 >> 24) & 255 )).$(( ($1 >> 16) & 255 )).$(( ($1 >> 8) & 255 )).$(( $1 & 255 ))"; }
 prefix2mask() { int2ip $(( (0xFFFFFFFF << (32 - $1)) & 0xFFFFFFFF )); }
@@ -317,6 +510,18 @@ ask_password() {  # ask_password <user> -> NEW_USER_PW ; hidden input, typed twi
     done
 }
 
+if $OPT_FIND_LOCALE; then
+    if [[ -n "$FIND_LOCALE_Q" ]] || ! { [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null; }; then
+        res="$(loc_search "$FIND_LOCALE_Q")"
+        if [[ -z "$res" ]]; then info "No locale matches \"$FIND_LOCALE_Q\"."; exit 1; fi
+        printf '%s\n' "$res" | loc_print
+        info "Use one with: --locale NAME   (now: $(sys_locale_label); default: $DEFAULT_LOCALE)"
+    elif locale_finder ""; then
+        ok "$PICKED_LOCALE - use it with: --locale $PICKED_LOCALE"
+    fi
+    exit 0
+fi
+
 TTY_OK=false
 if [[ "$OPT_MENU" != no ]] && [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null; then TTY_OK=true; fi
 SHOW_MENU=false
@@ -325,7 +530,8 @@ if $TTY_OK && { [[ "$OPT_MENU" == yes ]] || ! $SYS_FLAGS; }; then SHOW_MENU=true
 if $SHOW_MENU; then
     # nothing is pre-selected; only items given as flags start ticked
     M=(false "$([[ -n "$NEW_USER" ]] && echo true || echo false)" "$DO_SSH" "$([[ -n "$NEW_HOSTNAME" ]] && echo true || echo false)" \
-       "$([[ -n "$NET_IP$NET_MASK$NET_GW" ]] && echo true || echo false)" "$([[ -n "$NET_DNS" ]] && echo true || echo false)")
+       "$([[ -n "$NET_IP$NET_MASK$NET_GW" ]] && echo true || echo false)" "$([[ -n "$NET_DNS" ]] && echo true || echo false)" \
+       "$([[ -n "$NEW_LOCALE" ]] && echo true || echo false)")
     ci="$(cur_iface)"
     while true; do
         cur_net="${ci:-no default route}"; [[ -n "$ci" ]] && cur_net+=" $(cur_addr "$ci") ($(cur_mode "$ci")), gateway $(cur_gw "$ci")"
@@ -336,7 +542,8 @@ if $SHOW_MENU; then
                      "Enable SSH access for non-root users" \
                      "Change hostname          now: $(hostname 2>/dev/null)" \
                      "Change IP / subnet / gw  now: $cur_net" \
-                     "Change DNS servers       now: $(cur_dns)"; do
+                     "Change DNS servers       now: $(cur_dns)" \
+                     "Change system locale     now: $(sys_locale_label)  (default: $DEFAULT_LOCALE)"; do
             mark=" "; ${M[$i]} && mark="${C_G}x${C_0}"
             printf '   %d) [%s] %s\n' $((i + 1)) "$mark" "$label"; i=$((i + 1))
         done
@@ -346,12 +553,12 @@ if $SHOW_MENU; then
             q|Q) echo "   Nothing changed."; exit 0 ;;
             "") if [[ " ${M[*]} " == *true* ]]; then break; else printf '   %sSelect at least one item.%s\n' "$C_Y" "$C_0"; fi ;;
             *)  for n in ${sel//,/ }; do
-                    if [[ "$n" =~ ^[1-6]$ ]]; then if ${M[$((n - 1))]}; then M[n - 1]=false; else M[n - 1]=true; fi
+                    if [[ "$n" =~ ^[1-7]$ ]]; then if ${M[$((n - 1))]}; then M[n - 1]=false; else M[n - 1]=true; fi
                     else printf '   %s"%s" is not a menu number%s\n' "$C_Y" "$n" "$C_0"; fi
                 done ;;
         esac
     done
-    OPT_DOTFILES=${M[0]}; DO_USER=${M[1]}; DO_SSH=${M[2]}; DO_HOST=${M[3]}; DO_NET=${M[4]}; DO_DNS=${M[5]}
+    OPT_DOTFILES=${M[0]}; DO_USER=${M[1]}; DO_SSH=${M[2]}; DO_HOST=${M[3]}; DO_NET=${M[4]}; DO_DNS=${M[5]}; DO_LOCALE=${M[6]}
 
     if $DO_USER; then
         printf '\n%s  New user with sudo access%s\n' "$C_B" "$C_0"
@@ -403,6 +610,12 @@ if $SHOW_MENU; then
             printf '   %s%s - try again%s\n' "$C_Y" "$PLAN_ERR" "$C_0"; NET_GW=""; NET_MASK=""
         done
     fi
+    if $DO_LOCALE; then
+        printf '\n%s  System locale%s  (now: %s)\n' "$C_B" "$C_0" "$(sys_locale_label)"
+        info "Default: $DEFAULT_LOCALE. Type another name (e.g. de_DE.UTF-8), or ? to search by language or country."
+        [[ -n "$NEW_LOCALE" ]] && { n="$(loc_norm "$NEW_LOCALE")" && NEW_LOCALE="$n"; }
+        ask_locale
+    fi
     if $DO_DNS || { $DO_NET && [[ "$NET_MODE" == static && -z "$(cur_dns)" ]]; }; then
         DO_DNS=true
         printf '\n%s  DNS servers%s\n' "$C_B" "$C_0"
@@ -426,6 +639,12 @@ else
     [[ -n "$NEW_HOSTNAME" ]] && DO_HOST=true
     [[ -n "$NET_IP$NET_MASK$NET_GW" ]] && DO_NET=true
     [[ -n "$NET_DNS" ]] && DO_DNS=true
+    if [[ -n "$NEW_LOCALE" ]]; then
+        DO_LOCALE=true
+        n="$(loc_norm "$NEW_LOCALE")" || die "--locale: '$NEW_LOCALE' is not a locale name like en_US.UTF-8 (try --find-locale)."
+        loc_known "$n" || die "--locale: $n is not a locale this system knows. Search with: --find-locale ${n%%_*}"
+        NEW_LOCALE="$n"
+    fi
     if $DO_HOST && ! valid_hostname "$NEW_HOSTNAME"; then die "'$NEW_HOSTNAME' is not a valid hostname."; fi
     if [[ -n "$SSH_KEY" ]] && ! valid_key_arg "$SSH_KEY"; then die "--ssh-key: not a public key, a file or gh:<user>: $(short "$SSH_KEY" 40)"; fi
     if $DO_NET; then plan_network || die "--ip/--subnet/--gateway: $PLAN_ERR"; fi
@@ -437,7 +656,13 @@ if $DO_NET && [[ "$NET_MODE" == static ]] && ! $DO_DNS; then
     if [[ -n "$NET_DNS" ]]; then plan_dns || DNS_LIST=""
     else warn "No current DNS servers found - set them with --dns, or name lookups may stop working."; fi
 fi
-SYS_ANY=false; { $DO_USER || $DO_SSH || $DO_HOST || $DO_NET || $DO_DNS; } && SYS_ANY=true
+# The dotfiles want a real locale: a language-less image default (C.UTF-8,
+# POSIX, nothing) becomes en_US.UTF-8 unless --keep-locale. NixOS defaults to
+# en_US.UTF-8 already (i18n.defaultLocale).
+if $OPT_DOTFILES && ! $DO_LOCALE && ! $OPT_KEEP_LOCALE && ! $IS_NIXOS && loc_is_plain "$(cur_sys_locale)"; then
+    DO_LOCALE=true; NEW_LOCALE="$DEFAULT_LOCALE"; LOCALE_AUTO=true
+fi
+SYS_ANY=false; { $DO_USER || $DO_SSH || $DO_HOST || $DO_NET || $DO_DNS || $DO_LOCALE; } && SYS_ANY=true
 $OPT_DOTFILES || $SYS_ANY || die "Nothing to do (--no-dotfiles without any system option)."
 
 if $SYS_ANY; then
@@ -447,6 +672,7 @@ if $SYS_ANY; then
     $DO_HOST && info "Hostname: $(hostname 2>/dev/null) → $NEW_HOSTNAME"
     $DO_NET  && info "Network:  $NET_IFACE → $([[ "$NET_MODE" == dhcp ]] && echo DHCP || echo "$NET_ADDR/$NET_PREFIX ($(prefix2mask "$NET_PREFIX")), gateway $NET_GW")"
     [[ -n "$DNS_LIST" ]] && info "DNS:      $DNS_LIST$($DO_DNS || echo "  (current servers, kept)")"
+    $DO_LOCALE && info "Locale:   $(sys_locale_label) → $NEW_LOCALE$($LOCALE_AUTO && echo "  (default for the dotfiles; --keep-locale skips it)")"
     $OPT_DOTFILES || info "Dotfiles: skipped"
     if $TTY_OK && ! $OPT_YES && ! $OPT_DRY; then
         yesno "Go ahead?" y || { echo "   Nothing changed."; exit 0; }
@@ -1056,67 +1282,8 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]]; then
 fi
 
 # =============================================================================
-#  4. Locale: en_US.UTF-8 (generated if missing, then made the system default)
+#  4. Locale: set with the system settings (scripts/system-setup.sh, setup_locale)
 # =============================================================================
-has_en_us() { locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; }
-if $OPT_PACKAGES && ! has_en_us && [[ "$PM" != apk ]]; then
-    step "Generating the en_US.UTF-8 locale"
-    pkg_install_entry locales; LOC_RC=$?   # 2 = the list says nothing to install here
-    case "$PM" in
-        apt)    "${SUDO[@]}" sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen 2>/dev/null
-                grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null \
-                    || echo 'en_US.UTF-8 UTF-8' | "${SUDO[@]}" tee -a /etc/locale.gen >/dev/null
-                "${SUDO[@]}" locale-gen >/dev/null 2>&1 ;;
-        pacman) "${SUDO[@]}" sed -i 's/^#\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen && "${SUDO[@]}" locale-gen >/dev/null 2>&1 ;;
-        nix)    info "NixOS locales are declarative - add to /etc/nixos/configuration.nix:"
-                info '  i18n.supportedLocales = [ "en_US.UTF-8/UTF-8" ];  # then: sudo nixos-rebuild switch' ;;
-    esac
-    [[ $LOC_RC -eq 1 ]] && info "(could not install the [locale] package(s): $(candidates locales))"
-    if has_en_us; then ok "en_US.UTF-8 available"
-    else warn "en_US.UTF-8 locale not available - the shell keeps the current locale."; fi
-fi
-
-# The system default (LANG) - cloud/VM images ship C.UTF-8. Written where the
-# distro reads it at login: /etc/default/locale (Debian/Ubuntu),
-# /etc/locale.conf (Fedora/RHEL, Arch, openSUSE), /etc/profile.d (Alpine:
-# musl has no locale database, any name works). NixOS: i18n.defaultLocale,
-# which is en_US.UTF-8 unless you changed it - left to your configuration.
-LOC_FILE=""
-case "$PM" in
-    apt) LOC_FILE=/etc/default/locale ;;
-    apk) LOC_FILE=/etc/profile.d/00-dotfiles-nixish-locale.sh ;;
-    nix) ;;
-    *)   LOC_FILE=/etc/locale.conf ;;
-esac
-if [[ -n "$LOC_FILE" ]] && { [[ "$PM" == apk ]] || has_en_us; }; then
-    if grep -qsE '^(export[[:space:]]+)?LANG="?en_US\.UTF-8"?[[:space:]]*$' "$LOC_FILE" && ! grep -qsE '^(export[[:space:]]+)?LC_ALL=' "$LOC_FILE"; then
-        ok "System locale is already en_US.UTF-8 ($LOC_FILE)"
-    elif $OPT_DRY; then
-        info "[dry-run] would set the system locale to LANG=en_US.UTF-8 in $LOC_FILE"
-    else
-        step "Setting the system locale to en_US.UTF-8"
-        [[ -f "$LOC_FILE" ]] && "${SUDO[@]}" cp -p "$LOC_FILE" "$LOC_FILE.dotfiles-nixish.bak.$TS"
-        if [[ "$PM" == apk ]]; then
-            # /etc/profile sets LANG=C.UTF-8 first, then sources profile.d
-            printf '# Managed by dotfiles-nixish (install.sh)\nexport LANG=en_US.UTF-8\n' | "${SUDO[@]}" tee "$LOC_FILE" >/dev/null
-        elif [[ "$PM" == apt ]] && have update-locale; then
-            "${SUDO[@]}" update-locale LANG=en_US.UTF-8 >/dev/null 2>&1 \
-                || { printf 'LANG=en_US.UTF-8\n' | "${SUDO[@]}" tee "$LOC_FILE" >/dev/null; }
-        else
-            # keep other LC_* lines, replace LANG; LC_ALL would override everything
-            { grep -vsE '^(export[[:space:]]+)?(LANG|LC_ALL)=' "$LOC_FILE"; echo 'LANG=en_US.UTF-8'; } > "$WORKDIR/locale.conf" 2>/dev/null \
-                || echo 'LANG=en_US.UTF-8' > "$WORKDIR/locale.conf"
-            "${SUDO[@]}" tee "$LOC_FILE" < "$WORKDIR/locale.conf" >/dev/null
-        fi
-        # tell systemd-localed too, so localectl shows it (no-op in containers without it)
-        [[ "$PM" != apk ]] && have localectl && "${SUDO[@]}" localectl set-locale LANG=en_US.UTF-8 >/dev/null 2>&1
-        if grep -qsE '^(export[[:space:]]+)?LANG="?en_US\.UTF-8"?' "$LOC_FILE"; then
-            ok "System locale: LANG=en_US.UTF-8 ($LOC_FILE) - applies to new logins"
-        else
-            warn "Could not set LANG=en_US.UTF-8 in $LOC_FILE"
-        fi
-    fi
-fi
 
 # =============================================================================
 #  5. xtree -> /usr/local/bin/xtree  +  ~/xtree symlink

@@ -3,6 +3,25 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-10-28: Choose the locale in the menu, with a locale finder
+
+- **Menu item 7, "Change system locale":** shows the current locale and the
+  default, `en_US.UTF-8`, which is pre-filled in the prompt (Enter keeps it).
+  Not selected by default, like the other items.
+- **Locale finder:** type `?` at the prompt, or a language, country or
+  code (`german`, `brazil`, `fr_CA`). It lists numbered matches with
+  descriptions and `(installed)` markers. On its own:
+  `install.sh --find-locale [TEXT]`.
+- **`--locale NAME`** sets it without the menu (`de_de` works, and is
+  checked against what the system can generate). **`--keep-locale`** never
+  changes it.
+- Any locale, not only en_US: generated per distro, then checked that it
+  really works. On NixOS it's set through `i18n.defaultLocale`.
+- The shell block follows the system default instead of always using
+  en_US.UTF-8.
+- The default for the dotfiles is unchanged: a system with no real locale
+  (C/POSIX) gets en_US.UTF-8, now listed under "Planned system changes".
+
 ## 2026-10-28: en_US.UTF-8 for the whole locale, not just the time
 
 Before, only `LC_TIME` was set, so `locale` on a fresh VM still showed

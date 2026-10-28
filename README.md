@@ -47,6 +47,7 @@ to toggle (e.g. `1` for the dotfiles), Enter to start:
    4) [ ] Change hostname          now: web-01
    5) [ ] Change IP / subnet / gw  now: eth0 192.168.1.11/24 (dhcp) ...
    6) [ ] Change DNS servers       now: 192.168.1.1
+   7) [ ] Change system locale     now: C.UTF-8  (default: en_US.UTF-8)
 ```
 
 Details are asked next, then you see the planned changes and confirm.
@@ -91,6 +92,9 @@ Pick them in the menu, or pass flags (flags skip the menu):
 | `--gateway ADDR`     | default gateway                                 |
 | `--dns "A B"`        | DNS servers                                     |
 | `--iface NAME`       | interface (default: the one with the route)     |
+| `--locale NAME`      | system locale (default: `en_US.UTF-8`) - see [Locale](#locale) |
+| `--keep-locale`      | never change the system locale                  |
+| `--find-locale [TEXT]` | search locales by language/country/code, then exit |
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) \
@@ -107,6 +111,7 @@ How each one is applied:
 |          | Alpine                   | `adduser` + `wheel`, installs sudo     |
 | SSH      | all but NixOS            | `sshd_config.d/10-dotfiles-nixish.conf`|
 | Hostname | all but NixOS            | `hostnamectl` or `/etc/hostname`       |
+| Locale   | all but NixOS            | generate it + `/etc/default/locale` or `/etc/locale.conf` |
 | Network  | NetworkManager           | `nmcli connection modify`              |
 |          | netplan (Ubuntu server)  | `netplan set` + `netplan apply`        |
 |          | systemd-networkd         | `00-dotfiles-nixish-<iface>.network`   |
@@ -239,24 +244,57 @@ Three ways to use your own list:
 
 ### Locale
 
-Everything uses **en_US.UTF-8**. Cloud and VM images usually start with
-`C.UTF-8`.
+The system locale is **en_US.UTF-8 by default**. Cloud and VM images usually
+start with `C.UTF-8`.
 
-- The `en_US.UTF-8` locale is generated if it's missing.
-- It becomes the system default (`LANG=en_US.UTF-8`) in the file your
-  distro reads at login. Settings already there are backed up first.
+- **Menu item 7, "Change system locale"**, shows the current locale and the
+  default. When you pick it, the prompt is pre-filled with `en_US.UTF-8`:
+  press Enter to keep it, type another name (`de_DE.UTF-8`, or just
+  `de_de`), or type `?` to search.
+- **Search (locale finder):** type a language, country or code and pick
+  a number from the list. You can also type a new search. It lists what
+  this system can generate, and `(installed)` marks the ones already there.
+  ```text
+     Search by language, country or code (e.g. german, brazil, fr_CA; Enter = back): switzerland
+     4 match(es) for "switzerland":
+       1) de_CH.UTF-8            German locale for Switzerland
+       2) fr_CH.UTF-8            French locale for Switzerland
+       3) it_CH.UTF-8            Italian locale for Switzerland
+       4) wae_CH.UTF-8           Walser locale for Switzerland
+  ```
+  If you type a name the system doesn't know, it searches for it.
+- **On its own**, without changing anything:
+  `bash install.sh --find-locale german` (or `--find-locale` with no text
+  for the interactive search). Then use the result with `--locale NAME`.
+- **Without the menu:** `--locale de_DE.UTF-8`.
+- **Dotfiles default:** if the system has no real locale (`C`,
+  `C.UTF-8`, `POSIX` or nothing) and you install the dotfiles, it is set to
+  en_US.UTF-8 and listed under "Planned system changes". `--keep-locale`
+  skips this. A locale you chose earlier is never changed by this.
 
-  | Distro                         | File                                         |
-  |--------------------------------|----------------------------------------------|
-  | Debian / Ubuntu                | `/etc/default/locale` (via `update-locale`)  |
-  | Fedora / RHEL, Arch, openSUSE  | `/etc/locale.conf` (other `LC_*` kept, `LC_ALL` removed) |
-  | Alpine                         | `/etc/profile.d/00-dotfiles-nixish-locale.sh` |
-  | NixOS                          | `i18n.defaultLocale` (en_US.UTF-8 by default, so nothing is changed) |
+What it does:
 
-- The bash/zsh block also exports `LANG` and `LC_TIME`, so the shell is
-  right even if an SSH client sends its own `LANG`.
-- It takes effect at the **next login**. Log out and back in, then check
-  with `locale`: every line should show `en_US.UTF-8`.
+1. Generates the locale if it's missing: `locales` + `/etc/locale.gen` +
+   `locale-gen` (Debian/Ubuntu, Arch), `glibc-langpack-<lang>`
+   (Fedora/RHEL), `glibc-locale` (openSUSE), or `localedef` as a last
+   resort. It then checks that the locale really works
+   (`LC_ALL=<name> locale charmap`).
+2. Makes it the default for new logins, with a backup of the old file. Only
+   `LANG` is written, so no `LC_*` or `LANGUAGE` lines keep parts of the old
+   locale:
+
+   | Distro                         | Where                                        |
+   |--------------------------------|----------------------------------------------|
+   | Debian / Ubuntu                | `/etc/default/locale`                        |
+   | Fedora / RHEL, Arch, openSUSE  | `/etc/locale.conf` (+ `localectl set-locale`) |
+   | Alpine                         | `/etc/profile.d/00-dotfiles-nixish-locale.sh` |
+   | NixOS                          | `i18n.defaultLocale` in the generated module, then `nixos-rebuild switch` |
+
+3. The bash/zsh block reads that default and exports `LANG` and `LC_TIME`,
+   so an SSH client's own `LANG`/`LC_*` can't override it.
+
+It takes effect at the **next login**. Log out and back in, then check with
+`locale`: every line should show the chosen locale.
 
 ### xtree
 
