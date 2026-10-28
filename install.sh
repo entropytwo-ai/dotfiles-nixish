@@ -1056,10 +1056,11 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]]; then
 fi
 
 # =============================================================================
-#  4. Locale for LC_TIME=en_US.UTF-8
+#  4. Locale: en_US.UTF-8 (generated if missing, then made the system default)
 # =============================================================================
-if $OPT_PACKAGES && ! locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then
-    step "Generating en_US.UTF-8 locale (used by LC_TIME)"
+has_en_us() { locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; }
+if $OPT_PACKAGES && ! has_en_us && [[ "$PM" != apk ]]; then
+    step "Generating the en_US.UTF-8 locale"
     pkg_install_entry locales; LOC_RC=$?   # 2 = the list says nothing to install here
     case "$PM" in
         apt)    "${SUDO[@]}" sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen 2>/dev/null
@@ -1071,8 +1072,50 @@ if $OPT_PACKAGES && ! locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then
                 info '  i18n.supportedLocales = [ "en_US.UTF-8/UTF-8" ];  # then: sudo nixos-rebuild switch' ;;
     esac
     [[ $LOC_RC -eq 1 ]] && info "(could not install the [locale] package(s): $(candidates locales))"
-    if locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then ok "en_US.UTF-8 available"
-    else warn "en_US.UTF-8 locale not available - LC_TIME may fall back to C."; fi
+    if has_en_us; then ok "en_US.UTF-8 available"
+    else warn "en_US.UTF-8 locale not available - the shell keeps the current locale."; fi
+fi
+
+# The system default (LANG) - cloud/VM images ship C.UTF-8. Written where the
+# distro reads it at login: /etc/default/locale (Debian/Ubuntu),
+# /etc/locale.conf (Fedora/RHEL, Arch, openSUSE), /etc/profile.d (Alpine:
+# musl has no locale database, any name works). NixOS: i18n.defaultLocale,
+# which is en_US.UTF-8 unless you changed it - left to your configuration.
+LOC_FILE=""
+case "$PM" in
+    apt) LOC_FILE=/etc/default/locale ;;
+    apk) LOC_FILE=/etc/profile.d/00-dotfiles-nixish-locale.sh ;;
+    nix) ;;
+    *)   LOC_FILE=/etc/locale.conf ;;
+esac
+if [[ -n "$LOC_FILE" ]] && { [[ "$PM" == apk ]] || has_en_us; }; then
+    if grep -qsE '^(export[[:space:]]+)?LANG="?en_US\.UTF-8"?[[:space:]]*$' "$LOC_FILE" && ! grep -qsE '^(export[[:space:]]+)?LC_ALL=' "$LOC_FILE"; then
+        ok "System locale is already en_US.UTF-8 ($LOC_FILE)"
+    elif $OPT_DRY; then
+        info "[dry-run] would set the system locale to LANG=en_US.UTF-8 in $LOC_FILE"
+    else
+        step "Setting the system locale to en_US.UTF-8"
+        [[ -f "$LOC_FILE" ]] && "${SUDO[@]}" cp -p "$LOC_FILE" "$LOC_FILE.dotfiles-nixish.bak.$TS"
+        if [[ "$PM" == apk ]]; then
+            # /etc/profile sets LANG=C.UTF-8 first, then sources profile.d
+            printf '# Managed by dotfiles-nixish (install.sh)\nexport LANG=en_US.UTF-8\n' | "${SUDO[@]}" tee "$LOC_FILE" >/dev/null
+        elif [[ "$PM" == apt ]] && have update-locale; then
+            "${SUDO[@]}" update-locale LANG=en_US.UTF-8 >/dev/null 2>&1 \
+                || { printf 'LANG=en_US.UTF-8\n' | "${SUDO[@]}" tee "$LOC_FILE" >/dev/null; }
+        else
+            # keep other LC_* lines, replace LANG; LC_ALL would override everything
+            { grep -vsE '^(export[[:space:]]+)?(LANG|LC_ALL)=' "$LOC_FILE"; echo 'LANG=en_US.UTF-8'; } > "$WORKDIR/locale.conf" 2>/dev/null \
+                || echo 'LANG=en_US.UTF-8' > "$WORKDIR/locale.conf"
+            "${SUDO[@]}" tee "$LOC_FILE" < "$WORKDIR/locale.conf" >/dev/null
+        fi
+        # tell systemd-localed too, so localectl shows it (no-op in containers without it)
+        [[ "$PM" != apk ]] && have localectl && "${SUDO[@]}" localectl set-locale LANG=en_US.UTF-8 >/dev/null 2>&1
+        if grep -qsE '^(export[[:space:]]+)?LANG="?en_US\.UTF-8"?' "$LOC_FILE"; then
+            ok "System locale: LANG=en_US.UTF-8 ($LOC_FILE) - applies to new logins"
+        else
+            warn "Could not set LANG=en_US.UTF-8 in $LOC_FILE"
+        fi
+    fi
 fi
 
 # =============================================================================

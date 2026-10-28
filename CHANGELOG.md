@@ -3,6 +3,21 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-10-28: en_US.UTF-8 for the whole locale, not just the time
+
+Before, only `LC_TIME` was set, so `locale` on a fresh VM still showed
+`LANG=C.UTF-8` and `C.UTF-8` everywhere else.
+
+- **System default:** `LANG=en_US.UTF-8` is written to
+  `/etc/default/locale` (Debian/Ubuntu), `/etc/locale.conf`
+  (Fedora/RHEL, Arch, openSUSE) or `/etc/profile.d` (Alpine), with a backup.
+  Re-runs say "already en_US.UTF-8". `--dry-run` only shows it.
+  NixOS is left to `i18n.defaultLocale`.
+- **Shell block:** exports `LANG` and `LC_TIME`, only when the locale exists.
+  An older `export LANG=...` line outside the block is removed like other
+  duplicates.
+- Takes effect at the next login.
+
 ## 2026-10-28: README contents, alias list, history example
 
 - Table of contents at the top of the README.

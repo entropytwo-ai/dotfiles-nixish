@@ -19,8 +19,17 @@ HISTCONTROL=ignoreboth:erasedups
 shopt -s histappend
 HISTSIZE=10000
 HISTFILESIZE=10000
-export LC_TIME=en_US.UTF-8
 export HISTTIMEFORMAT='%m/%d/%y %T '
+
+# --- Locale: en_US.UTF-8 ------------------------------------------------------
+# Only when the locale exists (else every program warns "cannot change locale").
+# musl/Alpine has no 'locale -a' and accepts any name.
+_loc=$(locale -a 2>/dev/null)
+if [ -z "$_loc" ] || printf '%s\n' "$_loc" | grep -qiE '^en_US\.utf-?8$'; then
+    export LANG=en_US.UTF-8
+    export LC_TIME=en_US.UTF-8
+fi
+unset _loc
 
 # --- Aliases --------------------------------------------------------------------
 # eza replacement for ls (falls back to exa, then plain ls)

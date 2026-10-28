@@ -15,6 +15,7 @@
 - [📦 What it installs](#-what-it-installs)
 - [➕ Adding your own packages](#-adding-your-own-packages)
 - [⚙️ What it configures](#️-what-it-configures)
+  - [Locale](#locale)
   - [xtree](#xtree)
   - [~/.bashrc](#bashrc)
   - [~/.zshrc](#zshrc)
@@ -236,6 +237,27 @@ Three ways to use your own list:
 
 ## ⚙️ What it configures
 
+### Locale
+
+Everything uses **en_US.UTF-8**. Cloud and VM images usually start with
+`C.UTF-8`.
+
+- The `en_US.UTF-8` locale is generated if it's missing.
+- It becomes the system default (`LANG=en_US.UTF-8`) in the file your
+  distro reads at login. Settings already there are backed up first.
+
+  | Distro                         | File                                         |
+  |--------------------------------|----------------------------------------------|
+  | Debian / Ubuntu                | `/etc/default/locale` (via `update-locale`)  |
+  | Fedora / RHEL, Arch, openSUSE  | `/etc/locale.conf` (other `LC_*` kept, `LC_ALL` removed) |
+  | Alpine                         | `/etc/profile.d/00-dotfiles-nixish-locale.sh` |
+  | NixOS                          | `i18n.defaultLocale` (en_US.UTF-8 by default, so nothing is changed) |
+
+- The bash/zsh block also exports `LANG` and `LC_TIME`, so the shell is
+  right even if an SSH client sends its own `LANG`.
+- It takes effect at the **next login**. Log out and back in, then check
+  with `locale`: every line should show `en_US.UTF-8`.
+
 ### xtree
 
 [`scripts/xtree.sh`](scripts/xtree.sh) is installed to
@@ -253,8 +275,9 @@ It's a tree view with:
 A block between `# dotfiles-nixish BEGIN` and `# dotfiles-nixish END`:
 
 - **History:** `HISTCONTROL=ignoreboth:erasedups`, `histappend`,
-  10000 entries, timestamps (`%m/%d/%y %T`), `LC_TIME=en_US.UTF-8`
-  (the locale is generated if it's missing)
+  10000 entries, timestamps (`%m/%d/%y %T`)
+- **Locale:** `LANG=en_US.UTF-8` and `LC_TIME=en_US.UTF-8`, set only if
+  the locale exists, so programs never warn "cannot change locale"
 - **Aliases:** `l` and `ll` (eza, falling back to exa, then ls), `la`,
   `cowsays`, `xtree`, and `bat` on Debian - see [Aliases](#aliases)
 - **Greeting:** every interactive shell shows `fastfetch` with a

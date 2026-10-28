@@ -22,9 +22,18 @@ setopt HIST_IGNORE_SPACE       # bash: HISTCONTROL=ignorespace
 setopt HIST_IGNORE_DUPS        # bash: HISTCONTROL=ignoredups
 setopt HIST_IGNORE_ALL_DUPS    # bash: HISTCONTROL=erasedups
 setopt EXTENDED_HISTORY        # store timestamps
-export LC_TIME=en_US.UTF-8
 # bash: HISTTIMEFORMAT='%m/%d/%y %T '
 alias history='fc -t "%m/%d/%y %T" -l 1'
+
+# --- Locale: en_US.UTF-8 ------------------------------------------------------
+# Only when the locale exists (else every program warns "cannot change locale").
+# musl/Alpine has no 'locale -a' and accepts any name.
+_loc=$(locale -a 2>/dev/null)
+if [ -z "$_loc" ] || printf '%s\n' "$_loc" | grep -qiE '^en_US\.utf-?8$'; then
+    export LANG=en_US.UTF-8
+    export LC_TIME=en_US.UTF-8
+fi
+unset _loc
 
 # --- Aliases --------------------------------------------------------------------
 if command -v eza >/dev/null 2>&1; then
