@@ -251,16 +251,25 @@ start with `C.UTF-8`.
   default. When you pick it, the prompt is pre-filled with `en_US.UTF-8`:
   press Enter to keep it, type another name (`de_DE.UTF-8`, or just
   `de_de`), or type `?` to search.
-- **Search (locale finder):** type a language, country or code and pick
-  a number from the list. You can also type a new search. It lists what
-  this system can generate, and `(installed)` marks the ones already there.
+- **Search (locale finder):** type `?` (or `? gb` straight away), then any
+  of these - every word must match, best matches come first:
+  - a **country**: `britain`, `germany`, `united states`, or common names
+    like `england`, `uk`, `usa`, `holland`, `swiss`
+  - a **language**: `german`, `english`, `farsi`, `cantonese`
+  - a **code**: `gb`, `de`, `fr_CA`, `de_DE.UTF-8`
+  - **both**, to narrow it down: `english canada`, `french swiss`
+
+  Small typos are forgiven (`brittain`, `germnay`). Pick a number, or type a
+  new search. `(installed)` marks locales that are already set up.
   ```text
-     Search by language, country or code (e.g. german, brazil, fr_CA; Enter = back): switzerland
-     4 match(es) for "switzerland":
-       1) de_CH.UTF-8            German locale for Switzerland
-       2) fr_CH.UTF-8            French locale for Switzerland
-       3) it_CH.UTF-8            Italian locale for Switzerland
-       4) wae_CH.UTF-8           Walser locale for Switzerland
+     Search by language, country or code (e.g. german, britain, gb, fr_CA; Enter = back): england
+
+     5 matches for "england" (best first):
+       1) en_GB.UTF-8            English - United Kingdom
+       2) cy_GB.UTF-8            Welsh - United Kingdom
+       3) gd_GB.UTF-8            Scottish Gaelic - United Kingdom
+       4) gv_GB.UTF-8            Manx - United Kingdom
+       5) kw_GB.UTF-8            Cornish - United Kingdom
   ```
   If you type a name the system doesn't know, it searches for it.
 - **On its own**, without changing anything:

@@ -375,35 +375,190 @@ loc_catalog() {
 # loc_known <name>: 0 = installed or can be generated here, 1 = unknown
 loc_known() { loc_catalog | cut -d'|' -f1 | grep -qxF "$1"; }
 
-# loc_search <text>: matches by code, language or country (case-insensitive)
+LOC_COUNTRIES='
+AD=Andorra;AE=United Arab Emirates;AF=Afghanistan;AG=Antigua and Barbuda;AL=Albania;AM=Armenia;AR=Argentina;
+AT=Austria;AU=Australia;AW=Aruba;AZ=Azerbaijan;BA=Bosnia and Herzegovina;BD=Bangladesh;BE=Belgium;BG=Bulgaria;
+BH=Bahrain;BO=Bolivia;BR=Brazil;BT=Bhutan;BW=Botswana;BY=Belarus;CA=Canada;
+CD=Congo, The Democratic Republic of the;CH=Switzerland;CL=Chile;CN=China;CO=Colombia;CR=Costa Rica;CU=Cuba;
+CW=Curacao;CY=Cyprus;CZ=Czechia;DE=Germany;DJ=Djibouti;DK=Denmark;DO=Dominican Republic;DZ=Algeria;EC=Ecuador;
+EE=Estonia;EG=Egypt;ER=Eritrea;ES=Spain;ET=Ethiopia;FI=Finland;FJ=Fiji;FO=Faroe Islands;FR=France;
+GB=United Kingdom;GE=Georgia;GH=Ghana;GL=Greenland;GR=Greece;GT=Guatemala;HK=Hong Kong;HN=Honduras;HR=Croatia;
+HT=Haiti;HU=Hungary;ID=Indonesia;IE=Ireland;IL=Israel;IN=India;IQ=Iraq;IR=Iran;IS=Iceland;IT=Italy;JO=Jordan;
+JP=Japan;KE=Kenya;KG=Kyrgyzstan;KH=Cambodia;KR=South Korea;KW=Kuwait;KZ=Kazakhstan;LA=Laos;LB=Lebanon;
+LI=Liechtenstein;LK=Sri Lanka;LT=Lithuania;LU=Luxembourg;LV=Latvia;LY=Libya;MA=Morocco;ME=Montenegro;
+MG=Madagascar;MK=North Macedonia;MM=Myanmar;MN=Mongolia;MT=Malta;MU=Mauritius;MV=Maldives;MX=Mexico;
+MY=Malaysia;NG=Nigeria;NI=Nicaragua;NL=Netherlands;NO=Norway;NP=Nepal;NU=Niue;NZ=New Zealand;OM=Oman;
+PA=Panama;PE=Peru;PG=Papua New Guinea;PH=Philippines;PK=Pakistan;PL=Poland;PR=Puerto Rico;PT=Portugal;
+PY=Paraguay;QA=Qatar;RO=Romania;RS=Serbia;RU=Russia;RW=Rwanda;SA=Saudi Arabia;SC=Seychelles;
+SD=Sudan;SE=Sweden;SG=Singapore;SI=Slovenia;SK=Slovakia;SN=Senegal;SO=Somalia;SS=South Sudan;SV=El Salvador;
+SY=Syria;TH=Thailand;TJ=Tajikistan;TM=Turkmenistan;TN=Tunisia;TO=Tonga;TR=Turkey;TW=Taiwan;TZ=Tanzania;
+UA=Ukraine;UG=Uganda;US=United States;UY=Uruguay;UZ=Uzbekistan;VE=Venezuela;VN=Vietnam;VU=Vanuatu;WS=Samoa;
+YE=Yemen;ZA=South Africa;ZM=Zambia;ZW=Zimbabwe;'
+LOC_LANGS='
+aa=Afar;af=Afrikaans;agr=Aguaruna;ak=Akan;am=Amharic;an=Aragonese;anp=Angika;ar=Arabic;as=Assamese;
+ast=Asturian;ayc=Southern Aymara;az=Azerbaijani;be=Belarusian;bem=Bemba;ber=Berber;bg=Bulgarian;bhb=Bhili;
+bho=Bhojpuri;bi=Bislama;bn=Bengali;bo=Tibetan;br=Breton;brx=Bodo;bs=Bosnian;byn=Bilin;ca=Catalan;ce=Chechen;
+chr=Cherokee;ckb=Central Kurdish;cmn=Mandarin Chinese;crh=Crimean Tatar;cs=Czech;csb=Kashubian;cv=Chuvash;
+cy=Welsh;da=Danish;de=German;doi=Dogri;dsb=Lower Sorbian;dv=Dhivehi;dz=Dzongkha;el=Greek;en=English;
+es=Spanish;et=Estonian;eu=Basque;fa=Persian;ff=Fulah;fi=Finnish;fil=Filipino;fo=Faroese;fr=French;
+fur=Friulian;fy=Western Frisian;ga=Irish;gd=Scottish Gaelic;gez=Geez;gl=Galician;gu=Gujarati;gv=Manx;ha=Hausa;
+hak=Hakka Chinese;he=Hebrew;hi=Hindi;hif=Fiji Hindi;hne=Chhattisgarhi;hr=Croatian;hsb=Upper Sorbian;
+ht=Haitian;hu=Hungarian;hy=Armenian;ia=Interlingua;id=Indonesian;ig=Igbo;ik=Inupiaq;is=Icelandic;it=Italian;
+iu=Inuktitut;ja=Japanese;ka=Georgian;kab=Kabyle;kk=Kazakh;kl=Kalaallisut;km=Khmer;kn=Kannada;ko=Korean;
+kok=Konkani;ks=Kashmiri;ku=Kurdish;kw=Cornish;ky=Kirghiz;lb=Luxembourgish;lg=Ganda;li=Limburgan;lij=Ligurian;
+ln=Lingala;lo=Lao;lt=Lithuanian;lv=Latvian;lzh=Literary Chinese;mag=Magahi;mai=Maithili;mfe=Morisyen;
+mg=Malagasy;mhr=Eastern Mari;mi=Maori;miq=Miskito;mjw=Karbi;mk=Macedonian;ml=Malayalam;mn=Mongolian;
+mni=Manipuri;mnw=Mon;mr=Marathi;ms=Malay;mt=Maltese;my=Burmese;nan=Min Nan Chinese;nb=Norwegian Bokmal;
+nds=Low German;ne=Nepali;nhn=Central Nahuatl;niu=Niuean;nl=Dutch;nn=Norwegian Nynorsk;nr=South Ndebele;
+nso=Pedi;oc=Occitan;om=Oromo;or=Oriya;os=Ossetian;pa=Panjabi;pap=Papiamento;pl=Polish;ps=Pushto;pt=Portuguese;
+quz=Cusco Quechua;raj=Rajasthani;rif=Tarifit;ro=Romanian;ru=Russian;rw=Kinyarwanda;sa=Sanskrit;sah=Yakut;
+sat=Santali;sc=Sardinian;sd=Sindhi;se=Northern Sami;sgs=Samogitian;shn=Shan;shs=Shuswap;si=Sinhala;sid=Sidamo;
+sk=Slovak;sl=Slovenian;sm=Samoan;so=Somali;sq=Albanian;sr=Serbian;ss=Swati;st=Southern Sotho;sv=Swedish;
+sw=Swahili;szl=Silesian;ta=Tamil;tcy=Tulu;te=Telugu;tg=Tajik;th=Thai;the=Chitwania Tharu;ti=Tigrinya;
+tig=Tigre;tk=Turkmen;tl=Tagalog;tn=Tswana;to=Tonga;tpi=Tok Pisin;tr=Turkish;ts=Tsonga;tt=Tatar;ug=Uighur;
+uk=Ukrainian;unm=Unami;ur=Urdu;uz=Uzbek;ve=Venda;vi=Vietnamese;wa=Walloon;wae=Walser;wal=Wolaytta;wo=Wolof;
+xh=Xhosa;yi=Yiddish;yo=Yoruba;yue=Yue Chinese;yuw=Yau;zh=Chinese;zu=Zulu;'
+# Country / language names (ISO 3166 / ISO 639) so every locale is searchable by name,
+# even on systems without glibc's locale sources (Fedora langpacks, Alpine, NixOS).
+LOC_ALIASES='
+GB=uk britain great british england english scotland scottish wales welsh northern ireland
+US=usa america american united states
+NL=holland dutch;DE=deutschland;AT=osterreich oesterreich;CH=swiss schweiz suisse svizzera
+ES=espana spanish;MX=mexican;BR=brasil brazilian;CA=canadian;AU=aussie australian;NZ=kiwi
+IE=eire irish;FR=france;JP=nippon nihon japanese;KR=korea korean;CZ=czech republic
+TR=turkiye turkish;RU=russia russian;IR=persia;MM=burma;CN=prc mainland china chinese
+TW=taiwanese;HK=hongkong;AE=uae emirates dubai;SA=ksa;ZA=rsa;CD=congo drc;IN=bharat indian
+MK=macedonia;BY=belorussia;VN=viet nam;PH=philippine filipino;BE=belgian;IT=italian;PT=portuguese
+zh=mandarin simplified traditional;cmn=mandarin;yue=cantonese;fa=farsi persian;es=castilian espanol
+de=deutsch;fr=francais;nl=flemish;nb=norwegian bokmal;nn=norwegian nynorsk;el=hellenic;he=ivrit
+pt=portugues;ja=nihongo;it=italiano;sv=svenska;pl=polski;fil=tagalog;tl=tagalog;ms=bahasa
+id=bahasa;gd=gaelic scots;ga=gaelic;cy=cymraeg;eu=euskara;ca=catala;uk=ukraine;ko=hangul'
+
+# loc_search <text>: every word must match a locale code (fr_CA, fr, CA), a language or
+# country name or a common alias (england, usa, swiss, farsi ...). Best matches first;
+# if nothing matches exactly, small typos are forgiven (brittain, germnay).
+# Output: name|description|installed|common
 loc_search() {
     local q="${1,,}"
-    loc_catalog | awk -F'|' -v q="$q" 'q == "" || index(tolower($1 " " $2 " " $4), q) {print}'
+    q="${q//[^a-z0-9_]/ }"                         # "? gb", "?gb", "de_DE.UTF-8" -> words
+    q="$(sed -E 's/(^| )utf ?8( |$)/ /g' <<<"$q")"
+    { printf '%s\n' "$LOC_COUNTRIES" | tr ';' '\n' | sed -n 's/^\([A-Z][A-Z]\)=\(.*\)/C|\1|\2/p'
+      printf '%s\n' "$LOC_LANGS"     | tr ';' '\n' | sed -n 's/^\([a-z]*\)=\(.*\)/L|\1|\2/p'
+      printf '%s\n' "$LOC_ALIASES"   | tr ';' '\n' | sed -n 's/^\([A-Za-z]*\)=\(.*\)/A|\1|\2/p'
+      loc_catalog | sed 's/^/E|/'; } |
+    awk -F'|' -v q="$q" '
+    function lev(a, b,   i, j, la, lb, d, c, x) {   # edit distance (adjacent swap = 1)
+        la = length(a); lb = length(b)
+        for (i = 0; i <= la; i++) d[i, 0] = i
+        for (j = 0; j <= lb; j++) d[0, j] = j
+        for (i = 1; i <= la; i++) for (j = 1; j <= lb; j++) {
+            c = (substr(a, i, 1) == substr(b, j, 1)) ? 0 : 1
+            x = d[i-1, j] + 1; if (d[i, j-1] + 1 < x) x = d[i, j-1] + 1
+            if (d[i-1, j-1] + c < x) x = d[i-1, j-1] + c
+            if (i > 1 && j > 1 && substr(a, i, 1) == substr(b, j-1, 1) && substr(a, i-1, 1) == substr(b, j, 1) && d[i-2, j-2] + 1 < x) x = d[i-2, j-2] + 1
+            d[i, j] = x
+        }
+        return d[la, lb]
+    }
+    # score of one search word against one locale; 0 = no match
+    function tscore(t, k, fuzzy,   n, w, i, s, best, tol) {
+        if (index(t, "_")) return (index(tolower(name[k]), t) == 1) ? 10 : 0
+        if (t == ll[k] || t == cc[k]) return 5
+        best = 0; n = split(words[k], w, " ")
+        for (i = 1; i <= n; i++) {
+            s = 0
+            if (w[i] == t) s = 5
+            else if (length(t) >= 3 && index(w[i], t) == 1) s = 3
+            else if (length(w[i]) >= 4 && index(t, w[i]) == 1) s = 2            # brazilian -> brazil
+            else if (fuzzy && length(t) >= 5 && length(w[i]) >= 4) {
+                tol = (length(t) >= 8) ? 2 : 1
+                if (lev(t, w[i]) <= tol) s = 1
+            }
+            if (s > best) best = s
+        }
+        return best
+    }
+    BEGIN {   # main language of countries where it is not simply ll == cc (de_DE, fr_FR ...)
+        n = split("gb:en us:en au:en nz:en ie:en za:en ca:en in:hi sg:en ph:fil ng:en at:de ch:de li:de lu:lb br:pt mx:es ar:es cl:es co:es pe:es ve:es uy:es py:es bo:es ec:es cr:es cu:es do:es gt:es hn:es ni:es pa:es pr:es sv:es be:nl cn:zh tw:zh hk:zh jp:ja kr:ko ua:uk ir:fa il:he dk:da se:sv no:nb cz:cs gr:el ee:et vn:vi rs:sr si:sl al:sq ge:ka kz:kk my:ms pk:ur eg:ar sa:ar ae:ar ma:ar dz:ar tn:ar iq:ar jo:ar lb:ar kw:ar qa:ar om:ar bh:ar ye:ar sy:ar ly:ar sd:ar ke:sw tz:sw et:am bd:bn np:ne lk:si ad:ca", P, " ")
+        for (i = 1; i <= n; i++) { split(P[i], x, ":"); main[x[1]] = x[2] }
+        # home country of languages whose code differs from it (en -> US, sv -> SE ...)
+        n = split("en:us sv:se da:dk ja:jp ko:kr uk:ua el:gr cs:cz zh:cn he:il fa:ir vi:vn et:ee sq:al ka:ge kk:kz ms:my ur:pk ar:sa sw:ke hi:in nb:no nn:no sr:rs sl:si bn:bd ne:np si:lk am:et", P, " ")
+        for (i = 1; i <= n; i++) { split(P[i], x, ":"); home[x[1]] = x[2] }
+    }
+    $1 == "C" { cn[$2] = $3; next }
+    $1 == "L" { ln[$2] = $3; next }
+    $1 == "A" { al[$2] = al[$2] " " $3; next }
+    $1 == "E" {
+        k = ++N; name[k] = $2; inst[k] = $4; common[k] = $5
+        b = $2; mod = ""; if (b ~ /@/) { mod = b; sub(/.*@/, "", mod) }
+        sub(/[.@].*/, "", b); split(b, p, "_"); ll[k] = p[1]; cc[k] = tolower(p[2]); C = p[2]
+        d = $5
+        if (d == "" && (p[1] in ln) && (C in cn)) d = ln[p[1]] " - " cn[C]
+        if (d == "") d = $3
+        if (mod != "" && d !~ mod) d = d " (" mod ")"
+        desc[k] = d
+        txt = tolower($3 " " $5 " " ln[p[1]] " " cn[C] " " al[C] " " al[p[1]] " " d)
+        gsub(/[^a-z0-9]+/, " ", txt); words[k] = txt
+        next
+    }
+    END {
+        nt = split(q, T, " "); m = 0
+        for (i = 1; i <= nt; i++) if (length(T[i]) >= 2 || index(T[i], "_")) Q[++m] = T[i]
+        for (pass = 0; pass <= 1; pass++) {
+            found = 0
+            for (k = 1; k <= N; k++) {
+                tot = 0
+                for (i = 1; i <= m; i++) { s = tscore(Q[i], k, pass); if (!s) { tot = -1; break }; tot += s }
+                if (tot < 0) continue
+                found++
+                prim = (ll[k] == cc[k] || home[ll[k]] == cc[k]) ? 0 : (main[cc[k]] == ll[k] ? 1 : 2)
+                printf "%04d|%d%d|%d|%s|%s|%s|%s\n", 9999 - tot, prim, (common[k] == "" ? 1 : 0), (inst[k] == "installed" ? 0 : 1), name[k], desc[k], inst[k], common[k]
+            }
+            if (found || m == 0) break
+        }
+    }' | sort -t'|' -k1,1 -k2,2n -k3,3n -k4,4 | cut -d'|' -f4-
 }
+
 loc_print() {   # numbered list from loc_search output on stdin
     awk -F'|' '{ printf "   %3d) %-22s %s%s\n", NR, $1, $2, ($3 == "installed" ? "  (installed)" : "") }'
 }
 
+# loc_query_clean <text>: drop a leading "?" and stray punctuation/spaces from search text
+loc_query_clean() { local q="$1"; q="${q#"${q%%[![:space:]?]*}"}"; q="${q%"${q##*[![:space:]]}"}"; printf '%s' "$q"; }
+
 # Interactive search. Sets PICKED_LOCALE; returns 1 if the user went back.
 locale_finder() {
-    local q="${1:-}" res n pick
+    local q res n pick
+    q="$(loc_query_clean "${1:-}")"
     while true; do
         if [[ -z "$q" ]]; then
-            ask q "Search by language, country or code (e.g. german, brazil, fr_CA; Enter = back)"
+            ask q "Search by language, country or code (e.g. german, britain, gb, fr_CA; Enter = back)"
+            q="$(loc_query_clean "$q")"
             [[ -z "$q" ]] && return 1
+        fi
+        if [[ "${q//[^A-Za-z0-9_]/}" == "" ]] || [[ "${#q}" -lt 2 ]]; then
+            printf '   %sType at least 2 letters.%s\n' "$C_Y" "$C_0"; q=""; continue
         fi
         res="$(loc_search "$q")"
         n=$(grep -c . <<<"$res")
         if [[ -z "$res" ]]; then
-            printf '   %sNo locale matches "%s".%s\n' "$C_Y" "$q" "$C_0"; q=""; continue
+            printf '   %sNo locale matches "%s". Try a language (english), a country (britain, usa) or a code (gb, en_GB).%s\n' "$C_Y" "$q" "$C_0"
+            q=""; continue
         fi
-        printf '\n   %s%d match(es) for "%s":%s\n' "$C_B" "$n" "$q" "$C_0"
+        if (( n == 1 )); then
+            printf '\n   %s1 match for "%s":%s\n' "$C_B" "$q" "$C_0"
+        else
+            printf '\n   %s%d matches for "%s" (best first):%s\n' "$C_B" "$n" "$q" "$C_0"
+        fi
         head -40 <<<"$res" | loc_print
-        (( n > 40 )) && printf '   ... %d more - type a longer search\n' $((n - 40))
+        (( n > 40 )) && printf '   ... %d more - add a word to narrow it down (e.g. "english canada")\n' $((n - 40))
         ask pick "Number to choose, new search text, or Enter to go back"
+        pick="$(loc_query_clean "$pick")"
         if [[ -z "$pick" ]]; then return 1
         elif [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= n && pick <= 40 )); then
             PICKED_LOCALE="$(sed -n "${pick}p" <<<"$res" | cut -d'|' -f1)"; return 0
+        elif [[ "$pick" =~ ^[0-9]+$ ]]; then
+            printf '   %sPick a number from 1 to %d.%s\n' "$C_Y" $(( n < 40 ? n : 40 )) "$C_0"
         else q="$pick"; fi
     done
 }
@@ -413,10 +568,10 @@ ask_locale() {
     local a n
     while true; do
         ask a "Locale - Enter keeps the default, ? searches" "${NEW_LOCALE:-$DEFAULT_LOCALE}"
-        if [[ "$a" == "?" ]]; then locale_finder "" && { NEW_LOCALE="$PICKED_LOCALE"; ok "Chosen: $NEW_LOCALE"; return 0; }; continue; fi
+        if [[ "$a" == \?* ]]; then locale_finder "$a" && { NEW_LOCALE="$PICKED_LOCALE"; ok "Chosen: $NEW_LOCALE"; return 0; }; continue; fi
         if n="$(loc_norm "$a")" && loc_known "$n"; then NEW_LOCALE="$n"; return 0; fi
         printf '   %s"%s" is not a locale this system knows - searching for it:%s\n' "$C_Y" "$a" "$C_0"
-        locale_finder "${a%%.*}" && { NEW_LOCALE="$PICKED_LOCALE"; ok "Chosen: $NEW_LOCALE"; return 0; }
+        locale_finder "$a" && { NEW_LOCALE="$PICKED_LOCALE"; ok "Chosen: $NEW_LOCALE"; return 0; }
     done
 }
 
@@ -512,8 +667,9 @@ ask_password() {  # ask_password <user> -> NEW_USER_PW ; hidden input, typed twi
 
 if $OPT_FIND_LOCALE; then
     if [[ -n "$FIND_LOCALE_Q" ]] || ! { [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null; }; then
+        FIND_LOCALE_Q="$(loc_query_clean "$FIND_LOCALE_Q")"
         res="$(loc_search "$FIND_LOCALE_Q")"
-        if [[ -z "$res" ]]; then info "No locale matches \"$FIND_LOCALE_Q\"."; exit 1; fi
+        if [[ -z "$res" ]]; then info "No locale matches \"$FIND_LOCALE_Q\". Try a language (english), a country (britain, usa) or a code (gb, en_GB)."; exit 1; fi
         printf '%s\n' "$res" | loc_print
         info "Use one with: --locale NAME   (now: $(sys_locale_label); default: $DEFAULT_LOCALE)"
     elif locale_finder ""; then

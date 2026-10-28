@@ -3,6 +3,21 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-10-28: Better locale search
+
+- A leading `?` and stray spaces/punctuation are ignored, so `? gb`, `?gb` and
+  `? britain` work at both prompts (and `? gb` at the Locale prompt searches
+  straight away).
+- Searches by country and language **names** from built-in ISO tables, so it
+  works the same on every distro, plus common names (`england`, `uk`, `usa`,
+  `holland`, `swiss`, `farsi`, `cantonese` ...).
+- Codes match exactly (`gb`, `de`), every word must match (`english canada`),
+  and small typos are forgiven (`brittain`, `germnay`).
+- Results are ranked: the main locale of a country/language comes first
+  (`gb` -> `en_GB`, `german` -> `de_DE`). Descriptions read
+  "Language - Country". Clearer messages for no matches and out-of-range
+  numbers.
+
 ## 2026-10-28: Choose the locale in the menu, with a locale finder
 
 - **Menu item 7, "Change system locale":** shows the current locale and the
