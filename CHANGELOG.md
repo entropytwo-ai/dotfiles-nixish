@@ -3,6 +3,23 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-10-28: Dotfiles split into tools, shell config and xtree
+
+- **Menu item 1** now has three parts: **1a Tools**, **1b Shell config** and
+  **1c xtree**. `1` still selects all three (or clears them); `1a`/`1b`/`1c`
+  toggle one each. Item 1 shows `[x]` for all and `[~]` for some.
+- **New flags:** `--tools`, `--shell-config`, `--xtree` (only those parts,
+  combinable, skip the menu) and `--no-tools`, `--no-shell-config`,
+  `--no-xtree`.
+- Each part runs on its own: tools-only leaves `~/.bashrc` alone,
+  xtree-only installs no tools, shell-config-only notes that the aliases fall
+  back while the tools are missing. The summary and "Try:" line show only the
+  chosen parts.
+- The prerequisites are installed whenever any part is chosen. `--zsh`
+  installs zsh with the tools or the shell config.
+- The automatic `en_US.UTF-8` locale for a language-less system now comes
+  with the shell config (1b), whose block uses it.
+
 ## 2026-10-28: List the packages and what they do
 
 - **`--list-packages`** (or `p` in the menu) shows every package the script

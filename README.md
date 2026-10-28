@@ -38,10 +38,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixis
 ```
 
 In a terminal it first shows a menu with nothing selected - type numbers
-to toggle (e.g. `1` for the dotfiles), Enter to start:
+to toggle (e.g. `1` for all the dotfiles, `1c` for just xtree), Enter to start:
 
 ```
-   1) [ ] Dotfiles: tools, shell config, xtree
+   1) [ ] Dotfiles: all of 1a-1c (tools, shell config, xtree)
+      1a) [ ] Tools        packages from the [tools] list (p shows them)
+      1b) [ ] Shell config ~/.bashrc (and ~/.zshrc) block: aliases, history, greeting
+      1c) [ ] xtree        tree viewer -> /usr/local/bin/xtree + ~/xtree
    2) [ ] Create a user with sudo access
    3) [ ] Enable SSH access for non-root users
    4) [ ] Change hostname          now: web-01
@@ -50,6 +53,10 @@ to toggle (e.g. `1` for the dotfiles), Enter to start:
    7) [ ] Change system locale     now: C.UTF-8  (default: en_US.UTF-8)
 ```
 
+`1` selects all three dotfiles parts (or clears them if all were on);
+`1a`, `1b` and `1c` toggle one part each. Item 1 shows `[x]` when all three
+are on and `[~]` when only some are. Type `p` to see the packages.
+
 Details are asked next, then you see the planned changes and confirm.
 See [System settings](#-system-settings) for doing the same with flags.
 
@@ -57,8 +64,12 @@ Add options to the end of the one-liner:
 
 | Option             | What it does                                              |
 |--------------------|-----------------------------------------------------------|
+| `--tools`          | only the tools (menu 1a)                                  |
+| `--shell-config`   | only the shell config (menu 1b)                           |
+| `--xtree`          | only xtree (menu 1c)                                      |
+| `--no-tools`, `--no-shell-config`, `--no-xtree` | skip that part               |
 | `--zsh`            | also install zsh and configure `~/.zshrc`                 |
-| `--no-packages`    | only set up the shell config and xtree                    |
+| `--no-packages`    | no package installs at all (implies `--no-tools`)         |
 | `--keep-all`       | keep every repo file, not just the ones your OS needs     |
 | `--package-list F` | use this package list (file or URL) instead of the repo's |
 | `--flakes`         | NixOS: force `nix profile install` (flakes)               |
@@ -67,6 +78,13 @@ Add options to the end of the one-liner:
 | `--menu`           | always show the menu (`--no-menu`: never)                 |
 | `--dry-run`        | show the system changes without making them               |
 | `-y`               | don't ask "Go ahead?"                                     |
+
+`--tools`, `--shell-config` and `--xtree` can be combined
+(`--tools --xtree`); without any of them all three parts are done. Like the
+system options, they skip the menu. Only the shell config (1b) switches a
+language-less system locale (`C.UTF-8`, `POSIX`) to `en_US.UTF-8`, because
+its block uses the system locale; tools-only and xtree-only runs leave the
+locale alone.
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) --zsh
@@ -186,7 +204,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixis
 In the menu, type `p`. Example (Debian):
 
 ```text
-  Dotfiles tools (menu item 1)
+  Dotfiles tools (menu item 1a)
    ✔ eza        Modern ls with colors, icons and git status (the l / ll
                 aliases); falls back to the eza repo or GitHub
    ✔ duf        Disk usage/free space as a colorful table (a better df)

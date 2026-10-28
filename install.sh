@@ -36,7 +36,11 @@ TS="$(date +%Y%m%d-%H%M%S)"
 OPT_ZSH=false
 OPT_PACKAGES=true
 OPT_KEEP_ALL=false
-OPT_DOTFILES=true      # tools + shell config + xtree
+OPT_DOTFILES=true      # any of the three dotfiles parts below
+DO_TOOLS=true          # 1a: the [tools] packages
+DO_SHELL=true          # 1b: the ~/.bashrc / ~/.zshrc block (+ login shell file)
+DO_XTREE=true          # 1c: xtree -> /usr/local/bin/xtree + ~/xtree
+PART_FLAGS=false       # --tools/--shell-config/--xtree given: only those parts
 OPT_MENU=auto          # auto: show the menu when run in a terminal without system options
 OPT_YES=false
 OPT_DRY=false
@@ -60,9 +64,15 @@ dotfiles-nixish installer
 
 Run in a terminal, it first shows a menu. Giving system options skips the menu.
 
-Dotfiles:
+Dotfiles (menu item 1 = all three parts, 1a/1b/1c = one part):
+  --tools               only the tools (packages from the [tools] list)   (1a)
+  --shell-config        only the shell config (~/.bashrc, ~/.zshrc block) (1b)
+  --xtree               only xtree (/usr/local/bin/xtree + ~/xtree)       (1c)
+                        (combine them, e.g. --tools --xtree; without any of
+                        them all three parts are done)
+  --no-tools | --no-shell-config | --no-xtree   skip that part
   --zsh                 also install zsh and configure ~/.zshrc
-  --no-packages         skip package installs (shell config + xtree only)
+  --no-packages         skip all package installs (implies --no-tools)
   --no-dotfiles         skip tools, shell config and xtree (system settings only)
   --flakes | --no-flakes   NixOS: force nix profile (flakes) / nix-env (channels)
   --keep-all            keep every repo file (default: only what this OS needs)
@@ -109,6 +119,12 @@ while [[ $# -gt 0 ]]; do
         --zsh) OPT_ZSH=true ;;
         --no-packages) OPT_PACKAGES=false ;;
         --no-dotfiles) OPT_DOTFILES=false ;;
+        --tools|--shell-config|--shell|--xtree)
+            $PART_FLAGS || { DO_TOOLS=false; DO_SHELL=false; DO_XTREE=false; PART_FLAGS=true; }
+            case "$1" in --tools) DO_TOOLS=true ;; --xtree) DO_XTREE=true ;; *) DO_SHELL=true ;; esac ;;
+        --no-tools) DO_TOOLS=false ;;
+        --no-shell-config|--no-shell) DO_SHELL=false ;;
+        --no-xtree) DO_XTREE=false ;;
         --flakes) NIX_MODE=profile ;;
         --no-flakes) NIX_MODE="env" ;;
         --keep-all) OPT_KEEP_ALL=true ;;
@@ -894,7 +910,7 @@ show_packages() {
         [[ -n "${PKG_SEC[$sec]:-}" ]] || continue
         case "$sec" in
             prerequisites) printf '\n%s  Always (needed by the script itself)%s\n' "$C_B" "$C_0" ;;
-            tools)         printf '\n%s  Dotfiles tools (menu item 1)%s\n' "$C_B" "$C_0" ;;
+            tools)         printf '\n%s  Dotfiles tools (menu item 1a)%s\n' "$C_B" "$C_0" ;;
             *) $extra || printf '\n%s  Only when needed for a chosen option%s\n' "$C_B" "$C_0"; extra=true ;;
         esac
         for t in ${PKG_SEC[$sec]}; do
@@ -957,10 +973,19 @@ fi
 TTY_OK=false
 if [[ "$OPT_MENU" != no ]] && [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null; then TTY_OK=true; fi
 SHOW_MENU=false
-if $TTY_OK && { [[ "$OPT_MENU" == yes ]] || ! $SYS_FLAGS; }; then SHOW_MENU=true; fi
+if $TTY_OK && { [[ "$OPT_MENU" == yes ]] || { ! $SYS_FLAGS && ! $PART_FLAGS; }; }; then SHOW_MENU=true; fi
+# dotfiles parts as given on the command line (the menu overrides them)
+$OPT_DOTFILES || { DO_TOOLS=false; DO_SHELL=false; DO_XTREE=false; }
+parts_label() {   # "tools, shell config, xtree" for what is selected
+    local o=()
+    $DO_TOOLS && o+=("tools"); $DO_SHELL && o+=("shell config"); $DO_XTREE && o+=("xtree")
+    local IFS=,; o="${o[*]}"; printf '%s' "${o//,/, }"
+}
 
 if $SHOW_MENU; then
     # nothing is pre-selected; only items given as flags start ticked
+    PL=(a b c)
+    if $PART_FLAGS; then P=("$DO_TOOLS" "$DO_SHELL" "$DO_XTREE"); else P=(false false false); fi
     M=(false "$([[ -n "$NEW_USER" ]] && echo true || echo false)" "$DO_SSH" "$([[ -n "$NEW_HOSTNAME" ]] && echo true || echo false)" \
        "$([[ -n "$NET_IP$NET_MASK$NET_GW" ]] && echo true || echo false)" "$([[ -n "$NET_DNS" ]] && echo true || echo false)" \
        "$([[ -n "$NEW_LOCALE" ]] && echo true || echo false)")
@@ -969,7 +994,7 @@ if $SHOW_MENU; then
         cur_net="${ci:-no default route}"; [[ -n "$ci" ]] && cur_net+=" $(cur_addr "$ci") ($(cur_mode "$ci")), gateway $(cur_gw "$ci")"
         printf '\n%s  What should this run do?%s\n\n' "$C_B" "$C_0"
         i=0
-        for label in "Dotfiles: tools, shell config, xtree" \
+        for label in "Dotfiles: all of 1a-1c (tools, shell config, xtree)" \
                      "Create a user with sudo access" \
                      "Enable SSH access for non-root users" \
                      "Change hostname          now: $(hostname 2>/dev/null)" \
@@ -977,21 +1002,42 @@ if $SHOW_MENU; then
                      "Change DNS servers       now: $(cur_dns)" \
                      "Change system locale     now: $(sys_locale_label)  (default: $DEFAULT_LOCALE)"; do
             mark=" "; ${M[$i]} && mark="${C_G}x${C_0}"
-            printf '   %d) [%s] %s\n' $((i + 1)) "$mark" "$label"; i=$((i + 1))
+            if (( i == 0 )); then   # item 1 reflects its three parts: x = all, ~ = some
+                mark=" "; [[ " ${P[*]} " == *true* ]] && mark="${C_Y}~${C_0}"
+                [[ " ${P[*]} " != *false* ]] && mark="${C_G}x${C_0}"
+            fi
+            printf '   %d) [%s] %s\n' $((i + 1)) "$mark" "$label"
+            if (( i == 0 )); then
+                j=0
+                for sl in "Tools        packages from the [tools] list (p shows them)" \
+                          "Shell config ~/.bashrc (and ~/.zshrc) block: aliases, history, greeting" \
+                          "xtree        tree viewer -> /usr/local/bin/xtree + ~/xtree"; do
+                    mark=" "; ${P[$j]} && mark="${C_G}x${C_0}"
+                    printf '      1%s) [%s] %s\n' "${PL[$j]}" "$mark" "$sl"; j=$((j + 1))
+                done
+            fi
+            i=$((i + 1))
         done
         printf '\n'
-        ask sel "Type numbers to toggle (e.g. \"2 3\"), p to list the packages, Enter to start, q to quit"
+        ask sel "Type numbers to toggle (e.g. \"1a 1c 3\"), p to list the packages, Enter to start, q to quit"
         case "$sel" in
             q|Q) echo "   Nothing changed."; exit 0 ;;
             p|P) show_packages || true ;;
-            "") if [[ " ${M[*]} " == *true* ]]; then break; else printf '   %sSelect at least one item.%s\n' "$C_Y" "$C_0"; fi ;;
+            "") if [[ " ${M[*]} ${P[*]} " == *true* ]]; then break; else printf '   %sSelect at least one item.%s\n' "$C_Y" "$C_0"; fi ;;
             *)  for n in ${sel//,/ }; do
-                    if [[ "$n" =~ ^[1-7]$ ]]; then if ${M[$((n - 1))]}; then M[n - 1]=false; else M[n - 1]=true; fi
-                    else printf '   %s"%s" is not a menu number%s\n' "$C_Y" "$n" "$C_0"; fi
+                    n="${n,,}"
+                    if [[ "$n" == 1 ]]; then   # all three parts on, or off if they all were on
+                        if [[ " ${P[*]} " == *false* ]]; then P=(true true true); else P=(false false false); fi
+                    elif [[ "$n" =~ ^1([abc])$ ]]; then
+                        case "${BASH_REMATCH[1]}" in a) j=0 ;; b) j=1 ;; *) j=2 ;; esac
+                        if ${P[$j]}; then P[j]=false; else P[j]=true; fi
+                    elif [[ "$n" =~ ^[2-7]$ ]]; then if ${M[$((n - 1))]}; then M[n - 1]=false; else M[n - 1]=true; fi
+                    else printf '   %s"%s" is not a menu number (1, 1a, 1b, 1c, 2-7)%s\n' "$C_Y" "$n" "$C_0"; fi
                 done ;;
         esac
     done
-    OPT_DOTFILES=${M[0]}; DO_USER=${M[1]}; DO_SSH=${M[2]}; DO_HOST=${M[3]}; DO_NET=${M[4]}; DO_DNS=${M[5]}; DO_LOCALE=${M[6]}
+    DO_TOOLS=${P[0]}; DO_SHELL=${P[1]}; DO_XTREE=${P[2]}
+    DO_USER=${M[1]}; DO_SSH=${M[2]}; DO_HOST=${M[3]}; DO_NET=${M[4]}; DO_DNS=${M[5]}; DO_LOCALE=${M[6]}
 
     if $DO_USER; then
         printf '\n%s  New user with sudo access%s\n' "$C_B" "$C_0"
@@ -1089,14 +1135,18 @@ if $DO_NET && [[ "$NET_MODE" == static ]] && ! $DO_DNS; then
     if [[ -n "$NET_DNS" ]]; then plan_dns || DNS_LIST=""
     else warn "No current DNS servers found - set them with --dns, or name lookups may stop working."; fi
 fi
+# --no-packages means no tools; OPT_DOTFILES = any dotfiles part selected
+$OPT_PACKAGES || DO_TOOLS=false
+OPT_DOTFILES=false; { $DO_TOOLS || $DO_SHELL || $DO_XTREE; } && OPT_DOTFILES=true
 # The dotfiles want a real locale: a language-less image default (C.UTF-8,
 # POSIX, nothing) becomes en_US.UTF-8 unless --keep-locale. NixOS defaults to
-# en_US.UTF-8 already (i18n.defaultLocale).
-if $OPT_DOTFILES && ! $DO_LOCALE && ! $OPT_KEEP_LOCALE && ! $IS_NIXOS && loc_is_plain "$(cur_sys_locale)"; then
+# en_US.UTF-8 already (i18n.defaultLocale). Tied to the shell config (1b),
+# whose block uses the system locale; tools-only / xtree-only runs leave it.
+if $DO_SHELL && ! $DO_LOCALE && ! $OPT_KEEP_LOCALE && ! $IS_NIXOS && loc_is_plain "$(cur_sys_locale)"; then
     DO_LOCALE=true; NEW_LOCALE="$DEFAULT_LOCALE"; LOCALE_AUTO=true
 fi
 SYS_ANY=false; { $DO_USER || $DO_SSH || $DO_HOST || $DO_NET || $DO_DNS || $DO_LOCALE; } && SYS_ANY=true
-$OPT_DOTFILES || $SYS_ANY || die "Nothing to do (--no-dotfiles without any system option)."
+$OPT_DOTFILES || $SYS_ANY || die "Nothing to do (no dotfiles part and no system option selected)."
 
 if $SYS_ANY; then
     step "Planned system changes$($OPT_DRY && echo " (dry run - nothing will be changed)")"
@@ -1106,7 +1156,7 @@ if $SYS_ANY; then
     $DO_NET  && info "Network:  $NET_IFACE → $([[ "$NET_MODE" == dhcp ]] && echo DHCP || echo "$NET_ADDR/$NET_PREFIX ($(prefix2mask "$NET_PREFIX")), gateway $NET_GW")"
     [[ -n "$DNS_LIST" ]] && info "DNS:      $DNS_LIST$($DO_DNS || echo "  (current servers, kept)")"
     $DO_LOCALE && info "Locale:   $(sys_locale_label) → $NEW_LOCALE$($LOCALE_AUTO && echo "  (default for the dotfiles; --keep-locale skips it)")"
-    $OPT_DOTFILES || info "Dotfiles: skipped"
+    if $OPT_DOTFILES; then info "Dotfiles: $(parts_label)"; else info "Dotfiles: skipped"; fi
     if $TTY_OK && ! $OPT_YES && ! $OPT_DRY; then
         yesno "Go ahead?" y || { echo "   Nothing changed."; exit 0; }
     fi
@@ -1463,11 +1513,14 @@ if [[ -z "$OPT_PKG_LIST" && -r "$SRC_DIR/$PKG_LIST_REL" ]] \
         && PKG_LIST_SRC="$SRC_DIR/$PKG_LIST_REL" \
         && { ! $OPT_PACKAGES || info "Using the package list in $(disp "$PKG_LIST_SRC") (${PKG_COUNT:-0} packages)"; }
 fi
-read -ra TOOLS <<<"$(pkg_section tools)"
-if $OPT_ZSH; then read -ra ZT <<<"$(pkg_section zsh)"; TOOLS+=("${ZT[@]}"); fi
-[[ ${#TOOLS[@]} -eq 0 ]] && info "The package list has no [tools] entries - no tools to install."
+if $DO_TOOLS; then
+    read -ra TOOLS <<<"$(pkg_section tools)"
+    [[ ${#TOOLS[@]} -eq 0 ]] && info "The package list has no [tools] entries - no tools to install."
+fi
+# --zsh: zsh is needed for the tools and for the ~/.zshrc config alike
+if $OPT_ZSH && { $DO_TOOLS || $DO_SHELL; }; then read -ra ZT <<<"$(pkg_section zsh)"; TOOLS+=("${ZT[@]}"); fi
 
-if $OPT_PACKAGES && [[ "$PM" != "none" ]]; then
+if $OPT_PACKAGES && [[ "$PM" != "none" ]] && [[ ${#TOOLS[@]} -gt 0 ]]; then
     step "Installing packages"
     if [[ ${#TOOLS[@]} -gt 0 ]]; then
         nix_batch "${TOOLS[@]}"
@@ -1489,7 +1542,7 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]]; then
     fi
 
     # Debian/Ubuntu name the bat binary "batcat" - provide a real `bat` command too
-    if ! have bat && have batcat; then
+    if $DO_TOOLS && ! have bat && have batcat; then
         "${SUDO[@]}" ln -sfn "$(command -v batcat)" /usr/local/bin/bat && ok "bat -> batcat symlink in /usr/local/bin"
     fi
 
@@ -1507,6 +1560,7 @@ fi
 # =============================================================================
 #  5. xtree -> /usr/local/bin/xtree  +  ~/xtree symlink
 # =============================================================================
+if $DO_XTREE; then
 step "Installing xtree"
 XT_TEST_DIR="$(mktemp -d)"
 XT_OUT=""
@@ -1540,6 +1594,8 @@ if [[ -x "$XTREE_BIN" ]]; then
 else
     [[ -L "$LINK" && ! -e "$LINK" ]] && rm -f "$LINK"   # never leave a dangling ~/xtree
 fi
+XTREE_BIN_OK=true
+fi   # DO_XTREE
 
 # =============================================================================
 #  6. Shell config (idempotent BEGIN/END block)
@@ -1686,6 +1742,7 @@ install_block() {  # install_block <rcfile> <snippet>
     fi
 }
 
+if $DO_SHELL; then
 step "Editing shell dotfiles"
 install_block "$TARGET_HOME/.bashrc" "$SRC_DIR/config/bashrc_append.sh"
 
@@ -1724,8 +1781,7 @@ if have zsh; then
 else
     printf '\n'; info "zsh not installed - skipping ~/.zshrc (re-run with --zsh to install it)."
 fi
-
-XTREE_BIN_OK=true
+fi   # DO_SHELL
 fi   # OPT_DOTFILES
 
 # =============================================================================
@@ -1763,16 +1819,21 @@ if [[ ${#WARNINGS[@]} -gt 0 ]]; then
 fi
 
 if $OPT_DOTFILES; then
-cat <<EOF
-
-${C_B}${C_G}🎉 dotfiles-nixish is installed!${C_0}
-
-   Activate it now:   ${C_B}source ~/.bashrc${C_0}$($ZSH_DONE && printf '   (zsh: %ssource ~/.zshrc%s)' "$C_B" "$C_0")
-   ...or simply open a new terminal.
-
-   Try:  ${C_C}l${C_0}  ${C_C}ll${C_0}  ${C_C}cowsays${C_0}  ${C_C}xtree -f -L 2 .${C_0}  ${C_C}xtree -r -p -u -t ~${C_0}  ${C_C}duf${C_0}  ${C_C}btop${C_0}
-   Update later:  bash ${SRC_DIR}/install.sh   (after: git -C ${SRC_DIR} pull)
-EOF
+    if $DO_TOOLS && $DO_SHELL && $DO_XTREE; then DONE_MSG="dotfiles-nixish is installed!"
+    else DONE_MSG="dotfiles-nixish: $(parts_label) done!"; fi
+    TRY=""
+    $DO_SHELL && TRY+="${C_C}l${C_0}  ${C_C}ll${C_0}  ${C_C}cowsays${C_0}  "
+    $DO_XTREE && TRY+="${C_C}xtree -f -L 2 .${C_0}  ${C_C}xtree -r -p -u -t ~${C_0}  "
+    $DO_TOOLS && TRY+="${C_C}duf${C_0}  ${C_C}btop${C_0}  ${C_C}tldr tar${C_0}"
+    printf '\n%s%s🎉 %s%s\n\n' "$C_B" "$C_G" "$DONE_MSG" "$C_0"
+    if $DO_SHELL; then
+        printf '   Activate it now:   %ssource ~/.bashrc%s%s\n' "$C_B" "$C_0" "$($ZSH_DONE && printf '   (zsh: %ssource ~/.zshrc%s)' "$C_B" "$C_0")"
+        printf '   ...or simply open a new terminal.\n'
+        $DO_TOOLS || printf '   (tools not installed in this run: aliases use them where present and fall back to plain commands)\n'
+        printf '\n'
+    fi
+    printf '   Try:  %s\n' "${TRY%  }"
+    printf '   Update later:  bash %s/install.sh   (after: git -C %s pull)\n' "$SRC_DIR" "$SRC_DIR"
 elif [[ ${#WARNINGS[@]} -gt 0 ]]; then
     printf '\n%s%s⚠ Finished with %d warning(s) - see above%s\n' "$C_B" "$C_Y" "${#WARNINGS[@]}" "$C_0"
 else
