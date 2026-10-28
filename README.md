@@ -95,6 +95,7 @@ Pick them in the menu, or pass flags (flags skip the menu):
 | `--locale NAME`      | system locale (default: `en_US.UTF-8`) - see [Locale](#locale) |
 | `--keep-locale`      | never change the system locale                  |
 | `--find-locale [TEXT]` | search locales by language/country/code, then exit |
+| `--list-packages` | show the packages it installs here, what each does and which are installed, then exit |
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) \
@@ -174,6 +175,33 @@ This is the `[tools]` section of
 [`packages/package_list.txt`](packages/package_list.txt), the one package
 list used on every OS (see [Adding your own packages](#-adding-your-own-packages)).
 
+**See the full list for your system** - every package, what it does, the
+package name your distro uses, and whether it's already installed. Nothing
+is changed:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) --list-packages
+```
+
+In the menu, type `p`. Example (Debian):
+
+```text
+  Dotfiles tools (menu item 1)
+   ✔ eza        Modern ls with colors, icons and git status (the l / ll
+                aliases); falls back to the eza repo or GitHub
+   ✔ duf        Disk usage/free space as a colorful table (a better df)
+   · fortune    Random quotes for the cow to say, with the quote database
+                apt: fortune-mod + fortunes-min
+   ...
+  Only when needed for a chosen option
+   · zsh        The Z shell (only with --zsh)
+   · openssh    SSH server (only for "Enable SSH" when none is installed)
+                apt: openssh-server
+```
+
+`✔` = already installed, `·` = would be installed. The descriptions come
+from the `# text` after each line in the package list.
+
 Notes:
 
 - If `eza` is not in your distro's repos, it comes from the official eza
@@ -203,9 +231,9 @@ Add a line under `[tools]`:
 ```
 [tools]
 ...
-htop                                       # same name everywhere
-ripgrep  cmd=rg                            # the command differs from the name
-fd       cmd=fd,fdfind apt=fd-find dnf=fd-find
+htop                                       # Interactive process viewer
+ripgrep  cmd=rg                            # Very fast text search (rg)
+fd       cmd=fd,fdfind apt=fd-find dnf=fd-find   # Simple, fast alternative to find
 ```
 
 Line format: `name [apt= dnf= yum= pacman= zypper= apk= nix=] [cmd=] [path=]`
@@ -219,11 +247,11 @@ Line format: `name [apt= dnf= yum= pacman= zypper= apk= nix=] [cmd=] [path=]`
 | `-`             | skip on that package manager                                        |
 | `cmd=a,b`       | command(s) that prove it's installed                                |
 | `path=a,b`      | file(s) that prove it's installed                                   |
-| `# ...`         | comment                                                             |
+| `# text`        | after an entry: its description, shown by `--list-packages`; on its own line: a comment |
 
 Sections: `[prerequisites]` (always), `[zsh]` (with `--zsh`), `[ssh]`
 (when SSH is enabled and no server is installed), `[sudo]` (when a user
-is created and sudo is missing), `[locale]` (when en_US.UTF-8 is missing)
+is created and sudo is missing), `[locale]` (when the chosen locale must be generated)
 and `[tools]`. The NixOS module uses `[prerequisites]` and `[tools]`.
 
 A name that doesn't exist on your distro gets a warning and is skipped

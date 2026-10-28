@@ -17,52 +17,53 @@
 #                without cmd= a command named like "name" or the installed
 #                package counts
 #   path=a,b     file(s) proving it is installed (for packages without a command)
+#   # text       a short description (shown by install.sh --list-packages)
 #
 # Sections:
 #   [prerequisites]  always, before the rest (download + git helpers)
 #   [zsh]            only with --zsh
 #   [ssh]            only for "Enable SSH" when no SSH server is installed
 #   [sudo]           only for "Create a user" when sudo is missing
-#   [locale]         only when the en_US.UTF-8 locale is missing
+#   [locale]         only when the chosen locale must be generated
 #   [tools]          the tool set - the "Dotfiles" menu item
 # Unknown packages are skipped with a warning; the run goes on.
 
 [prerequisites]
-certs      path=/etc/ssl/certs/ca-certificates.crt,/etc/pki/tls/certs/ca-bundle.crt,/etc/ssl/certs  apt=ca-certificates dnf=ca-certificates pacman=ca-certificates zypper=ca-certificates apk=ca-certificates nix=cacert
-curl
-wget
-git
-tar        nix=gnutar
-gpg        apt=gnupg dnf=gnupg2,gnupg pacman=gnupg zypper=gpg2,gnupg apk=gnupg nix=gnupg
-acl        cmd=getfacl
-lsb        cmd=lsb_release apt=lsb-release dnf=redhat-lsb-core,lsb_release pacman=lsb-release zypper=lsb-release apk=lsb-release-minimal,lsb-release nix=lsb-release
+certs      path=/etc/ssl/certs/ca-certificates.crt,/etc/pki/tls/certs/ca-bundle.crt,/etc/ssl/certs  apt=ca-certificates dnf=ca-certificates pacman=ca-certificates zypper=ca-certificates apk=ca-certificates nix=cacert  # Trusted CA certificates, so HTTPS downloads work
+curl                       # Downloads files from the web (used by this script)
+wget                       # Alternative downloader (fallback for curl)
+git                        # Version control; fetches and updates this repo
+tar        nix=gnutar      # Unpacks .tar.gz archives (GitHub fallback downloads)
+gpg        apt=gnupg dnf=gnupg2,gnupg pacman=gnupg zypper=gpg2,gnupg apk=gnupg nix=gnupg  # Verifies signing keys of extra package repos
+acl        cmd=getfacl     # getfacl/setfacl - lets xtree show file ACLs
+lsb        cmd=lsb_release apt=lsb-release dnf=redhat-lsb-core,lsb_release pacman=lsb-release zypper=lsb-release apk=lsb-release-minimal,lsb-release nix=lsb-release  # lsb_release - reports the distro name and version
 
 [zsh]
-zsh
+zsh                        # The Z shell (only with --zsh)
 
 [ssh]
-openssh    cmd=sshd apt=openssh-server dnf=openssh-server zypper=openssh-server,openssh pacman=openssh apk=openssh-server+openssh nix=-
+openssh    cmd=sshd apt=openssh-server dnf=openssh-server zypper=openssh-server,openssh pacman=openssh apk=openssh-server+openssh nix=-  # SSH server (only for "Enable SSH" when none is installed)
 
 [sudo]
-sudo       nix=-
+sudo       nix=-           # Lets the new user run admin commands (only for "Create a user")
 
 [locale]
-locales    cmd=- apt=locales dnf=glibc-langpack-en,glibc-locale-source zypper=glibc-locale pacman=- apk=- nix=-
+locales    cmd=- apt=locales dnf=glibc-langpack-en,glibc-locale-source zypper=glibc-locale pacman=- apk=- nix=-  # Locale data, so the chosen locale can be generated
 
 [tools]
-eza                      # falls back to the eza apt repo / GitHub binary
-duf
-cowsay
-fortune    apt=fortune-mod+fortunes-min dnf=fortune-mod pacman=fortune-mod zypper=fortune apk=fortune nix=fortune
-fastfetch                # falls back to the GitHub .deb / .rpm / tarball
-tldr       apt=tldr,tealdeer dnf=tldr,tealdeer pacman=tealdeer,tldr zypper=tealdeer,tldr apk=tealdeer,tldr nix=tldr,tealdeer
-nmap
-ncdu
-btop
-fzf
-glances
-bat        cmd=bat,batcat
+eza                        # Modern ls with colors, icons and git status (the l / ll aliases); falls back to the eza repo or GitHub
+duf                        # Disk usage/free space as a colorful table (a better df)
+cowsay                     # ASCII cow that says text (the login greeting)
+fortune    apt=fortune-mod+fortunes-min dnf=fortune-mod pacman=fortune-mod zypper=fortune apk=fortune nix=fortune  # Random quotes for the cow to say, with the quote database
+fastfetch                  # System info summary shown at login (OS, CPU, memory ...); falls back to GitHub
+tldr       apt=tldr,tealdeer dnf=tldr,tealdeer pacman=tealdeer,tldr zypper=tealdeer,tldr apk=tealdeer,tldr nix=tldr,tealdeer  # Short, example-based help pages for commands (tldr tar)
+nmap                       # Network scanner: find hosts and open ports
+ncdu                       # Interactive disk usage browser - find what fills the disk
+btop                       # Resource monitor for CPU, memory, disks, network and processes
+fzf                        # Fuzzy finder for files, history (Ctrl+R) and lists
+glances                    # All-in-one system monitoring overview
+bat        cmd=bat,batcat  # cat with syntax highlighting and line numbers
 # your packages, e.g.:
-# htop
-# ripgrep  cmd=rg
-# fd       cmd=fd,fdfind apt=fd-find dnf=fd-find
+# htop                                    # Interactive process viewer
+# ripgrep  cmd=rg                         # Very fast text search (rg)
+# fd       cmd=fd,fdfind apt=fd-find dnf=fd-find   # Simple, fast alternative to find

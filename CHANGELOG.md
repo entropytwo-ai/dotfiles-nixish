@@ -3,6 +3,16 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-10-28: List the packages and what they do
+
+- **`--list-packages`** (or `p` in the menu) shows every package the script
+  installs on this system, grouped as Always / Dotfiles tools / Only when
+  needed, with a short description, the package name this distro uses
+  (`apt: fortune-mod + fortunes-min`), and `✔` for the ones already
+  installed. Also lists xtree. Changes nothing; works with `--package-list`.
+- Every entry in `packages/package_list.txt` now has a description: the
+  `# text` after the line. Your own packages can have one too.
+
 ## 2026-10-28: Better locale search
 
 - A leading `?` and stray spaces/punctuation are ignored, so `? gb`, `?gb` and

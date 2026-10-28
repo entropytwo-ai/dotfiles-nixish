@@ -49,6 +49,7 @@ DO_USER=false; NEW_USER=""; NEW_USER_PW=""
 NEW_HOSTNAME=""; NET_IFACE=""; NET_IP=""; NET_MASK=""; NET_GW=""; NET_DNS=""
 DO_LOCALE=false; NEW_LOCALE=""; LOCALE_AUTO=false; OPT_KEEP_LOCALE=false
 OPT_FIND_LOCALE=false; FIND_LOCALE_Q=""
+OPT_LIST_PKGS=false
 SYS_FLAGS=false
 
 usage() {
@@ -89,6 +90,10 @@ Locales:
   --find-locale [TEXT]  search the locales this system can use by language,
                         country or code (e.g. german, brazil, fr_CA) and exit
 
+Packages:
+  --list-packages       show which packages this script installs here, what
+                        each one does and which are already installed; exit
+
 Other:
   --menu | --no-menu    always / never show the menu
   -y, --yes             don't ask for confirmation
@@ -122,6 +127,7 @@ while [[ $# -gt 0 ]]; do
         --keep-locale) OPT_KEEP_LOCALE=true ;;
         --find-locale) OPT_FIND_LOCALE=true
                        if [[ $# -ge 2 && "$2" != -* ]]; then FIND_LOCALE_Q="$2"; shift; fi ;;
+        --list-packages|--packages) OPT_LIST_PKGS=true ;;
         --menu) OPT_MENU=yes ;;
         --no-menu) OPT_MENU=no ;;
         -y|--yes) OPT_YES=true ;;
@@ -134,9 +140,9 @@ done
 
 # ---------------------------------------------------------------- pretty output
 if [[ -t 1 ]]; then
-    C_B=$'\e[1m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_R=$'\e[31m'; C_C=$'\e[36m'; C_0=$'\e[0m'
+    C_B=$'\e[1m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_R=$'\e[31m'; C_C=$'\e[36m'; C_D=$'\e[2m'; C_0=$'\e[0m'
 else
-    C_B=""; C_G=""; C_Y=""; C_R=""; C_C=""; C_0=""
+    C_B=""; C_G=""; C_Y=""; C_R=""; C_C=""; C_D=""; C_0=""
 fi
 step() { printf '\n%s==> %s%s\n' "$C_B$C_C" "$*" "$C_0"; }
 info() { printf '   %s\n' "$*"; }
@@ -643,6 +649,274 @@ plan_dns() {   # normalise NET_DNS into DNS_LIST
 }
 valid_key_arg() { [[ "$1" =~ ^(gh|github): || -f "$1" || "$1" =~ ^(ssh-|ecdsa-|sk-) ]]; }
 
+# ---------------------------------------------------------------- package manager wrappers
+REFRESHED=false
+pm_refresh() {
+    $REFRESHED && return 0
+    REFRESHED=true
+    info "Refreshing package metadata..."
+    case "$PM" in
+        apt)    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -qq ;;
+        dnf)    "${SUDO[@]}" dnf -y -q makecache ;;
+        yum)    "${SUDO[@]}" yum -y -q makecache ;;
+        pacman) "${SUDO[@]}" pacman -Syu --noconfirm ;;   # Arch: never partial-upgrade
+        zypper) "${SUDO[@]}" zypper --non-interactive --quiet refresh ;;
+        apk)    "${SUDO[@]}" apk update -q ;;
+        nix)    true ;;   # never auto-update channels / flake registry behind your back
+    esac >/dev/null 2>&1 || warn "Package metadata refresh reported errors (continuing)."
+}
+
+pm_install() {  # pm_install pkg... ; returns non-zero on failure, never aborts
+    case "$PM" in
+        apt)    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
+                    install -y -qq --no-install-recommends "$@" ;;
+        dnf)    "${SUDO[@]}" dnf install -y -q "$@" ;;
+        yum)    "${SUDO[@]}" yum install -y -q "$@" ;;
+        pacman) "${SUDO[@]}" pacman -S --noconfirm --needed "$@" ;;
+        zypper) "${SUDO[@]}" zypper --non-interactive --quiet install --no-recommends "$@" ;;
+        apk)    "${SUDO[@]}" apk add -q "$@" ;;
+        nix)    nix_install "$@" ;;
+        *)      return 1 ;;
+    esac >/dev/null 2>&1
+}
+
+# Nix installs go into the *target user's* profile (no sudo needed)
+nix_install() {
+    local a refs=()
+    if [[ "$NIX_MODE" == "env" ]]; then
+        as_target nix-env -f '<nixpkgs>' -iA "$@" && return 0
+        for a in "$@"; do refs+=("nixos.$a"); done      # root channel named "nixos"
+        as_target nix-env -iA "${refs[@]}"
+    else
+        for a in "$@"; do refs+=("nixpkgs#$a"); done
+        as_target nix "${NIX_FLAGS[@]}" profile install "${refs[@]}"
+    fi
+}
+
+# Nix evaluates nixpkgs once per call, so install everything missing in one go
+nix_batch() {  # nix_batch <logical-tool>...
+    [[ "$PM" == "nix" ]] || return 0
+    local t p miss=()
+    for t in "$@"; do
+        tool_present "$t" && continue
+        p="$(candidates "$t" | awk '{print $1}')"
+        # shellcheck disable=SC2206  # a+b -> two packages
+        [[ -n "$p" ]] && miss+=(${p//+/ })
+    done
+    [[ ${#miss[@]} -gt 0 ]] || return 0
+    info "Installing via $(nix_mode_label): ${miss[*]}"
+    info "(first run downloads from the Nix binary cache - this can take a few minutes)"
+    pm_install "${miss[@]}" || info "Batch install failed - retrying one package at a time..."
+}
+
+# ---------------------------------------------------------------- the package list
+# packages/package_list.txt (see its header): one line per package, with the
+# package names per package manager where they differ. Parsed into:
+declare -A PKG_MAP=()      # "name|pm" -> "a,b+c"
+declare -A PKG_CMD=()      # name -> "cmd1,cmd2"  ("-" = none)
+declare -A PKG_PATH=()     # name -> "file1,file2"
+declare -A PKG_SEC=()      # section -> "name name ..."
+declare -A PKG_DESC=()     # name -> description (the "# text" after the entry)
+
+load_package_list() {  # load_package_list <file> ; 1 if unreadable
+    local f="$1" line sec=tools name tok k v n=0
+    local -a toks
+    [[ -r "$f" && -s "$f" ]] || return 1
+    local desc
+    PKG_MAP=(); PKG_CMD=(); PKG_PATH=(); PKG_SEC=(); PKG_DESC=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        desc=""; [[ "$line" == *#* ]] && desc="$(ltrim "${line#*#}")"
+        line="${line%%#*}"
+        read -ra toks <<<"$line"
+        [[ ${#toks[@]} -eq 0 ]] && continue
+        if [[ "${toks[0]}" =~ ^\[([A-Za-z0-9_-]+)\]$ ]]; then sec="${BASH_REMATCH[1]}"; continue; fi
+        name="${toks[0]}"
+        if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+            warn "package_list: '$name' is not a valid package name - line skipped"; continue
+        fi
+        [[ " ${PKG_SEC[$sec]:-} " == *" $name "* ]] || PKG_SEC[$sec]+="$name "
+        [[ -n "$desc" ]] && PKG_DESC[$name]="${desc%"${desc##*[![:space:]]}"}"
+        n=$((n + 1))
+        for tok in "${toks[@]:1}"; do
+            k="${tok%%=*}"; v="${tok#*=}"
+            if [[ "$tok" != *=* || -z "$v" ]]; then warn "package_list: '$tok' (for $name) is not key=value - ignored"; continue; fi
+            case "$k" in
+                cmd)  PKG_CMD[$name]="$v" ;;
+                path) PKG_PATH[$name]="$v" ;;
+                apt|dnf|yum|pacman|zypper|apk|nix) PKG_MAP[$name|$k]="$v" ;;
+                *) warn "package_list: unknown key '$k' (for $name) - ignored" ;;
+            esac
+        done
+    done < "$f"
+    PKG_COUNT=$n
+}
+
+pkg_section() {  # the names in one or more sections, in file order
+    local s; for s in "$@"; do printf '%s' "${PKG_SEC[$s]:-}"; done
+}
+
+# Package candidates for this package manager, space separated; "a+b" means
+# install together. Prints nothing when the list says "-" (skip here).
+candidates() {
+    local t="$1" v
+    v="${PKG_MAP[$t|$PM]:-}"
+    [[ -z "$v" && "$PM" == yum ]] && v="${PKG_MAP[$t|dnf]:-}"
+    [[ -z "$v" ]] && v="$t"
+    [[ "$v" == "-" ]] && return 0
+    printf '%s\n' "${v//,/ }"
+}
+
+# is the package installed? (asks the package manager)
+pm_has() {
+    case "$PM" in
+        apt)            dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed' ;;
+        dnf|yum|zypper) rpm -q --whatprovides "$1" >/dev/null 2>&1 ;;
+        pacman)         pacman -Q "$1" >/dev/null 2>&1 ;;
+        apk)            apk info -e "$1" >/dev/null 2>&1 ;;
+        *)              return 1 ;;
+    esac
+}
+
+# explicit check given in the list (cmd= or path=)?
+has_check() { [[ -n "${PKG_PATH[$1]:-}" || ( -n "${PKG_CMD[$1]:-}" && "${PKG_CMD[$1]}" != "-" ) ]]; }
+
+tool_present() {
+    local t="$1" x first
+    if has_check "$t"; then
+        local pp="${PKG_PATH[$t]:-}" pc="${PKG_CMD[$t]:-}"
+        for x in ${pp//,/ }; do [[ -e "$x" ]] && return 0; done
+        [[ "${PKG_CMD[$t]:--}" == "-" ]] && return 1
+        for x in ${pc//,/ }; do have "$x" && return 0; done
+        return 1
+    fi
+    [[ "${PKG_CMD[$t]:-}" != "-" ]] && have "$t" && return 0
+    # no command of that name: is the (first) package installed?
+    first="$(candidates "$t" | awk '{print $1}')"
+    [[ -n "$first" ]] || return 1
+    for x in ${first//+/ }; do pm_has "$x" || return 1; done
+}
+
+# install the first candidate that works; no checks (locales, sudo, sshd...)
+# 0 = installed, 1 = failed, 2 = the list says not needed on this system
+pkg_install_entry() {
+    local c cands
+    cands="$(candidates "$1")"
+    [[ -n "$cands" ]] || return 2
+    # shellcheck disable=SC2086  # a+b -> two packages
+    for c in $cands; do pm_install ${c//+/ } && return 0; done
+    return 1
+}
+
+ensure_tool() {  # ensure_tool <name from the list>
+    local tool="$1" pkg cands
+    if tool_present "$tool"; then ok "$tool (already installed)"; return 0; fi
+    cands="$(candidates "$tool")"
+    if [[ -z "$cands" ]]; then ok "$tool (not needed with $PM)"; return 0; fi
+    pm_refresh
+    for pkg in $cands; do
+        # shellcheck disable=SC2086
+        pm_install ${pkg//+/ } || continue
+        if tool_present "$tool"; then ok "$tool (via $PM: ${pkg//+/ + })"; return 0; fi
+        if ! has_check "$tool"; then   # installed, but no command named like it
+            ok "$tool (via $PM: ${pkg//+/ + }; no '$tool' command - add cmd= in package_list.txt to check it)"
+            return 0
+        fi
+    done
+    # tool-specific fallbacks
+    if declare -F "fallback_$tool" >/dev/null && "fallback_$tool" && tool_present "$tool"; then
+        return 0
+    fi
+    warn "Could not install '$tool' with $PM (tried: ${cands// /, }) - skipped. Fix its line in package_list.txt if the name differs here."
+    return 1
+}
+
+# ---------------------------------------------------------------- download helper
+fetch() {  # fetch URL DEST
+    if have curl; then curl -fsSL --retry 3 -o "$2" "$1"
+    elif have wget; then wget -q -O "$2" "$1"
+    else return 1; fi
+}
+
+SELF="${BASH_SOURCE[0]:-}"
+SELF_DIR=""
+[[ -n "$SELF" && -f "$SELF" ]] && SELF_DIR="$(cd "$(dirname "$SELF")" 2>/dev/null && pwd)"
+
+# Only used when no list can be read or downloaded (no curl/wget yet): just
+# enough to get a downloader, then the real list is fetched.
+BOOTSTRAP_LIST='[prerequisites]
+certs path=/etc/ssl/certs/ca-certificates.crt,/etc/pki/tls/certs/ca-bundle.crt,/etc/ssl/certs apt=ca-certificates dnf=ca-certificates pacman=ca-certificates zypper=ca-certificates apk=ca-certificates nix=cacert
+curl'
+
+# get_package_list <dest> : --package-list, else this checkout, else download
+get_package_list() {
+    local src="$OPT_PKG_LIST"
+    if [[ -n "$src" ]]; then
+        if [[ "$src" =~ ^https?:// ]]; then fetch "$src" "$1" && { PKG_LIST_SRC="$src"; return 0; }
+            die "Could not download the package list $src"
+        fi
+        [[ "$src" == /* ]] || src="$PWD/$src"
+        [[ -r "$src" ]] || die "Package list not found: $OPT_PKG_LIST"
+        cp "$src" "$1" && PKG_LIST_SRC="$src" && return 0
+    fi
+    if [[ -n "$SELF_DIR" && -r "$SELF_DIR/$PKG_LIST_REL" ]]; then
+        cp "$SELF_DIR/$PKG_LIST_REL" "$1" && PKG_LIST_SRC="$SELF_DIR/$PKG_LIST_REL" && return 0
+    fi
+    if { have curl || have wget; } && fetch "$RAW_BASE/$PKG_LIST_REL" "$1"; then
+        PKG_LIST_SRC="$RAW_BASE/$PKG_LIST_REL"; return 0
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------- --list-packages
+# pkg_names_here <name>: the package name(s) this package manager uses for it
+pkg_names_here() {
+    local c out="" alt
+    c="$(candidates "$1" | tr '\n' ' ')"; c="${c% }"
+    [[ -z "$c" ]] && { printf 'not needed here'; return; }
+    for alt in $c; do out+="${out:+ or }${alt//+/ + }"; done
+    printf '%s' "$out"
+}
+# show_packages: what this script installs here, with descriptions; changes nothing
+show_packages() {
+    local tmp sec t mark pk d width="${COLUMNS:-}" line n=0 inst=0 extra=false first
+    [[ "$width" =~ ^[0-9]+$ ]] || width="$(tput cols 2>/dev/null || echo 100)"
+    (( width < 60 )) && width=60
+    tmp="$(mktemp "${TMPDIR:-/tmp}/dotfiles-nixish-list.XXXXXX")"
+    if ! get_package_list "$tmp" || ! load_package_list "$tmp"; then
+        rm -f "$tmp"; warn "Could not read the package list ($PKG_LIST_REL)."; return 1
+    fi
+    rm -f "$tmp"
+    printf '\n%s  Packages this script installs on %s (package manager: %s)%s\n' "$C_B" "$OS_NAME" "$PM" "$C_0"
+    printf '   List: %s\n' "$PKG_LIST_SRC"
+    printf '   %s✔%s = already installed, %s·%s = would be installed\n' "$C_G" "$C_0" "$C_Y" "$C_0"
+    for sec in prerequisites tools zsh ssh sudo locale; do
+        [[ -n "${PKG_SEC[$sec]:-}" ]] || continue
+        case "$sec" in
+            prerequisites) printf '\n%s  Always (needed by the script itself)%s\n' "$C_B" "$C_0" ;;
+            tools)         printf '\n%s  Dotfiles tools (menu item 1)%s\n' "$C_B" "$C_0" ;;
+            *) $extra || printf '\n%s  Only when needed for a chosen option%s\n' "$C_B" "$C_0"; extra=true ;;
+        esac
+        for t in ${PKG_SEC[$sec]}; do
+            n=$((n + 1))
+            if tool_present "$t"; then mark="${C_G}✔${C_0}"; inst=$((inst + 1)); else mark="${C_Y}·${C_0}"; fi
+            d="${PKG_DESC[$t]:-(no description - add \"# text\" after it in package_list.txt)}"
+            pk="$(pkg_names_here "$t")"
+            # wrap long descriptions under the description column
+            first=true
+            while IFS= read -r line; do
+                if $first; then printf '   %s %-10s %s\n' "$mark" "$t" "$line"; first=false
+                else printf '                %s\n' "$line"; fi
+            done < <(fold -s -w $((width - 17)) <<<"$d" | sed 's/[[:space:]]*$//')
+            [[ "$pk" != "$t" ]] && printf '                %s%s: %s%s\n' "$C_D" "$PM" "$pk" "$C_0"
+        done
+    done
+    printf '\n%s  Also installed (not a package)%s\n' "$C_B" "$C_0"
+    printf '   %s %-10s %s\n' "$([[ -x /usr/local/bin/xtree ]] && echo "${C_G}✔${C_0}" || echo "${C_Y}·${C_0}")" xtree \
+        "Directory tree viewer with color themes, icons and ACLs (from this repo)"
+    printf '\n   %d packages, %d already installed. Add your own under [tools] in %s.\n' "$n" "$inst" "$PKG_LIST_REL"
+}
+
 # --- interactive helpers (read from the terminal even with `curl ... | bash`)
 ask() {   # ask <var> <prompt> [default]
     local _a
@@ -664,6 +938,8 @@ ask_password() {  # ask_password <user> -> NEW_USER_PW ; hidden input, typed twi
         NEW_USER_PW="$a"; return 0
     done
 }
+
+if $OPT_LIST_PKGS; then show_packages; exit $?; fi
 
 if $OPT_FIND_LOCALE; then
     if [[ -n "$FIND_LOCALE_Q" ]] || ! { [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null; }; then
@@ -704,9 +980,10 @@ if $SHOW_MENU; then
             printf '   %d) [%s] %s\n' $((i + 1)) "$mark" "$label"; i=$((i + 1))
         done
         printf '\n'
-        ask sel "Type numbers to toggle (e.g. \"2 3\"), Enter to start, q to quit"
+        ask sel "Type numbers to toggle (e.g. \"2 3\"), p to list the packages, Enter to start, q to quit"
         case "$sel" in
             q|Q) echo "   Nothing changed."; exit 0 ;;
+            p|P) show_packages || true ;;
             "") if [[ " ${M[*]} " == *true* ]]; then break; else printf '   %sSelect at least one item.%s\n' "$C_Y" "$C_0"; fi ;;
             *)  for n in ${sel//,/ }; do
                     if [[ "$n" =~ ^[1-7]$ ]]; then if ${M[$((n - 1))]}; then M[n - 1]=false; else M[n - 1]=true; fi
@@ -852,190 +1129,6 @@ else
 fi
 
 
-# ---------------------------------------------------------------- package manager wrappers
-REFRESHED=false
-pm_refresh() {
-    $REFRESHED && return 0
-    REFRESHED=true
-    info "Refreshing package metadata..."
-    case "$PM" in
-        apt)    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -qq ;;
-        dnf)    "${SUDO[@]}" dnf -y -q makecache ;;
-        yum)    "${SUDO[@]}" yum -y -q makecache ;;
-        pacman) "${SUDO[@]}" pacman -Syu --noconfirm ;;   # Arch: never partial-upgrade
-        zypper) "${SUDO[@]}" zypper --non-interactive --quiet refresh ;;
-        apk)    "${SUDO[@]}" apk update -q ;;
-        nix)    true ;;   # never auto-update channels / flake registry behind your back
-    esac >/dev/null 2>&1 || warn "Package metadata refresh reported errors (continuing)."
-}
-
-pm_install() {  # pm_install pkg... ; returns non-zero on failure, never aborts
-    case "$PM" in
-        apt)    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
-                    install -y -qq --no-install-recommends "$@" ;;
-        dnf)    "${SUDO[@]}" dnf install -y -q "$@" ;;
-        yum)    "${SUDO[@]}" yum install -y -q "$@" ;;
-        pacman) "${SUDO[@]}" pacman -S --noconfirm --needed "$@" ;;
-        zypper) "${SUDO[@]}" zypper --non-interactive --quiet install --no-recommends "$@" ;;
-        apk)    "${SUDO[@]}" apk add -q "$@" ;;
-        nix)    nix_install "$@" ;;
-        *)      return 1 ;;
-    esac >/dev/null 2>&1
-}
-
-# Nix installs go into the *target user's* profile (no sudo needed)
-nix_install() {
-    local a refs=()
-    if [[ "$NIX_MODE" == "env" ]]; then
-        as_target nix-env -f '<nixpkgs>' -iA "$@" && return 0
-        for a in "$@"; do refs+=("nixos.$a"); done      # root channel named "nixos"
-        as_target nix-env -iA "${refs[@]}"
-    else
-        for a in "$@"; do refs+=("nixpkgs#$a"); done
-        as_target nix "${NIX_FLAGS[@]}" profile install "${refs[@]}"
-    fi
-}
-
-# Nix evaluates nixpkgs once per call, so install everything missing in one go
-nix_batch() {  # nix_batch <logical-tool>...
-    [[ "$PM" == "nix" ]] || return 0
-    local t p miss=()
-    for t in "$@"; do
-        tool_present "$t" && continue
-        p="$(candidates "$t" | awk '{print $1}')"
-        # shellcheck disable=SC2206  # a+b -> two packages
-        [[ -n "$p" ]] && miss+=(${p//+/ })
-    done
-    [[ ${#miss[@]} -gt 0 ]] || return 0
-    info "Installing via $(nix_mode_label): ${miss[*]}"
-    info "(first run downloads from the Nix binary cache - this can take a few minutes)"
-    pm_install "${miss[@]}" || info "Batch install failed - retrying one package at a time..."
-}
-
-# ---------------------------------------------------------------- the package list
-# packages/package_list.txt (see its header): one line per package, with the
-# package names per package manager where they differ. Parsed into:
-declare -A PKG_MAP=()      # "name|pm" -> "a,b+c"
-declare -A PKG_CMD=()      # name -> "cmd1,cmd2"  ("-" = none)
-declare -A PKG_PATH=()     # name -> "file1,file2"
-declare -A PKG_SEC=()      # section -> "name name ..."
-
-load_package_list() {  # load_package_list <file> ; 1 if unreadable
-    local f="$1" line sec=tools name tok k v n=0
-    local -a toks
-    [[ -r "$f" && -s "$f" ]] || return 1
-    PKG_MAP=(); PKG_CMD=(); PKG_PATH=(); PKG_SEC=()
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%%#*}"; line="${line//$'\r'/}"
-        read -ra toks <<<"$line"
-        [[ ${#toks[@]} -eq 0 ]] && continue
-        if [[ "${toks[0]}" =~ ^\[([A-Za-z0-9_-]+)\]$ ]]; then sec="${BASH_REMATCH[1]}"; continue; fi
-        name="${toks[0]}"
-        if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
-            warn "package_list: '$name' is not a valid package name - line skipped"; continue
-        fi
-        [[ " ${PKG_SEC[$sec]:-} " == *" $name "* ]] || PKG_SEC[$sec]+="$name "
-        n=$((n + 1))
-        for tok in "${toks[@]:1}"; do
-            k="${tok%%=*}"; v="${tok#*=}"
-            if [[ "$tok" != *=* || -z "$v" ]]; then warn "package_list: '$tok' (for $name) is not key=value - ignored"; continue; fi
-            case "$k" in
-                cmd)  PKG_CMD[$name]="$v" ;;
-                path) PKG_PATH[$name]="$v" ;;
-                apt|dnf|yum|pacman|zypper|apk|nix) PKG_MAP[$name|$k]="$v" ;;
-                *) warn "package_list: unknown key '$k' (for $name) - ignored" ;;
-            esac
-        done
-    done < "$f"
-    PKG_COUNT=$n
-}
-
-pkg_section() {  # the names in one or more sections, in file order
-    local s; for s in "$@"; do printf '%s' "${PKG_SEC[$s]:-}"; done
-}
-
-# Package candidates for this package manager, space separated; "a+b" means
-# install together. Prints nothing when the list says "-" (skip here).
-candidates() {
-    local t="$1" v
-    v="${PKG_MAP[$t|$PM]:-}"
-    [[ -z "$v" && "$PM" == yum ]] && v="${PKG_MAP[$t|dnf]:-}"
-    [[ -z "$v" ]] && v="$t"
-    [[ "$v" == "-" ]] && return 0
-    printf '%s\n' "${v//,/ }"
-}
-
-# is the package installed? (asks the package manager)
-pm_has() {
-    case "$PM" in
-        apt)            dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed' ;;
-        dnf|yum|zypper) rpm -q --whatprovides "$1" >/dev/null 2>&1 ;;
-        pacman)         pacman -Q "$1" >/dev/null 2>&1 ;;
-        apk)            apk info -e "$1" >/dev/null 2>&1 ;;
-        *)              return 1 ;;
-    esac
-}
-
-# explicit check given in the list (cmd= or path=)?
-has_check() { [[ -n "${PKG_PATH[$1]:-}" || ( -n "${PKG_CMD[$1]:-}" && "${PKG_CMD[$1]}" != "-" ) ]]; }
-
-tool_present() {
-    local t="$1" x first
-    if has_check "$t"; then
-        local pp="${PKG_PATH[$t]:-}" pc="${PKG_CMD[$t]:-}"
-        for x in ${pp//,/ }; do [[ -e "$x" ]] && return 0; done
-        [[ "${PKG_CMD[$t]:--}" == "-" ]] && return 1
-        for x in ${pc//,/ }; do have "$x" && return 0; done
-        return 1
-    fi
-    [[ "${PKG_CMD[$t]:-}" != "-" ]] && have "$t" && return 0
-    # no command of that name: is the (first) package installed?
-    first="$(candidates "$t" | awk '{print $1}')"
-    [[ -n "$first" ]] || return 1
-    for x in ${first//+/ }; do pm_has "$x" || return 1; done
-}
-
-# install the first candidate that works; no checks (locales, sudo, sshd...)
-# 0 = installed, 1 = failed, 2 = the list says not needed on this system
-pkg_install_entry() {
-    local c cands
-    cands="$(candidates "$1")"
-    [[ -n "$cands" ]] || return 2
-    # shellcheck disable=SC2086  # a+b -> two packages
-    for c in $cands; do pm_install ${c//+/ } && return 0; done
-    return 1
-}
-
-ensure_tool() {  # ensure_tool <name from the list>
-    local tool="$1" pkg cands
-    if tool_present "$tool"; then ok "$tool (already installed)"; return 0; fi
-    cands="$(candidates "$tool")"
-    if [[ -z "$cands" ]]; then ok "$tool (not needed with $PM)"; return 0; fi
-    pm_refresh
-    for pkg in $cands; do
-        # shellcheck disable=SC2086
-        pm_install ${pkg//+/ } || continue
-        if tool_present "$tool"; then ok "$tool (via $PM: ${pkg//+/ + })"; return 0; fi
-        if ! has_check "$tool"; then   # installed, but no command named like it
-            ok "$tool (via $PM: ${pkg//+/ + }; no '$tool' command - add cmd= in package_list.txt to check it)"
-            return 0
-        fi
-    done
-    # tool-specific fallbacks
-    if declare -F "fallback_$tool" >/dev/null && "fallback_$tool" && tool_present "$tool"; then
-        return 0
-    fi
-    warn "Could not install '$tool' with $PM (tried: ${cands// /, }) - skipped. Fix its line in package_list.txt if the name differs here."
-    return 1
-}
-
-# ---------------------------------------------------------------- download helper
-fetch() {  # fetch URL DEST
-    if have curl; then curl -fsSL --retry 3 -o "$2" "$1"
-    elif have wget; then wget -q -O "$2" "$1"
-    else return 1; fi
-}
-
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-nixish.XXXXXX")"
 trap 'rm -rf "$WORKDIR"; kill "${SUDO_KEEPALIVE:-}" 2>/dev/null' EXIT
 
@@ -1131,36 +1224,6 @@ enable_epel() {
 # =============================================================================
 #  0b. Load the package list (needed before anything is installed)
 # =============================================================================
-SELF="${BASH_SOURCE[0]:-}"
-SELF_DIR=""
-[[ -n "$SELF" && -f "$SELF" ]] && SELF_DIR="$(cd "$(dirname "$SELF")" 2>/dev/null && pwd)"
-
-# Only used when no list can be read or downloaded (no curl/wget yet): just
-# enough to get a downloader, then the real list is fetched.
-BOOTSTRAP_LIST='[prerequisites]
-certs path=/etc/ssl/certs/ca-certificates.crt,/etc/pki/tls/certs/ca-bundle.crt,/etc/ssl/certs apt=ca-certificates dnf=ca-certificates pacman=ca-certificates zypper=ca-certificates apk=ca-certificates nix=cacert
-curl'
-
-# get_package_list <dest> : --package-list, else this checkout, else download
-get_package_list() {
-    local src="$OPT_PKG_LIST"
-    if [[ -n "$src" ]]; then
-        if [[ "$src" =~ ^https?:// ]]; then fetch "$src" "$1" && { PKG_LIST_SRC="$src"; return 0; }
-            die "Could not download the package list $src"
-        fi
-        [[ "$src" == /* ]] || src="$PWD/$src"
-        [[ -r "$src" ]] || die "Package list not found: $OPT_PKG_LIST"
-        cp "$src" "$1" && PKG_LIST_SRC="$src" && return 0
-    fi
-    if [[ -n "$SELF_DIR" && -r "$SELF_DIR/$PKG_LIST_REL" ]]; then
-        cp "$SELF_DIR/$PKG_LIST_REL" "$1" && PKG_LIST_SRC="$SELF_DIR/$PKG_LIST_REL" && return 0
-    fi
-    if { have curl || have wget; } && fetch "$RAW_BASE/$PKG_LIST_REL" "$1"; then
-        PKG_LIST_SRC="$RAW_BASE/$PKG_LIST_REL"; return 0
-    fi
-    return 1
-}
-
 PKG_LIST_SRC=""
 if ! get_package_list "$WORKDIR/package_list.txt" || ! load_package_list "$WORKDIR/package_list.txt"; then
     if $OPT_PACKAGES && [[ "$PM" != none ]] && ! have curl && ! have wget; then
