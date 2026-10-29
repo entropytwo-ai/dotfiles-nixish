@@ -12,9 +12,10 @@ tput() {
   if [[ "${_XT_COLOR:-0}" != 1 ]]; then return 0; fi
   case "$1" in
     setaf)
-      local n=$2
-      if (( n > 15 && _XT_NCOLORS < 256 )); then n=3; fi          # e.g. orange -> yellow
-      if (( _XT_NCOLORS >= 8 )); then command tput setaf "$n" 2>/dev/null && return 0; fi
+      local n=$2   # optional $3: colour to use on 8/16-colour terminals (default yellow)
+      if (( n > 15 && _XT_NCOLORS < 256 )); then n=${3:-3}; fi   # e.g. orange -> yellow
+      # Only ask terminfo for colours it has (TERM=linux has 8, so setaf 15 breaks).
+      if (( _XT_NCOLORS >= 8 && n < _XT_NCOLORS )); then command tput setaf "$n" 2>/dev/null && return 0; fi
       if (( n < 8 )); then printf '\033[3%dm' "$n"
       elif (( n < 16 )); then printf '\033[9%dm' $((n - 8))
       else printf '\033[38;5;%dm' "$n"; fi ;;
@@ -57,7 +58,7 @@ set_color_scheme() {
     COLOR_WHITE=$(tput setaf 7) # White
   elif [ "$scheme" == "ghost" ]; then
     COLOR_PERMISSIONS=$(tput setaf 8) # Grey
-    COLOR_SIZE=$(tput setaf 14) # Pale Cyan
+    COLOR_SIZE=$(tput setaf 30 6) # Dark Teal (plain cyan on 8/16-colour terminals)
     COLOR_DIRECTORY=$(tput setaf 15) # Bright White
     COLOR_BOLD_DIRECTORY=$(tput bold; tput setaf 15) # Bold Bright White
     COLOR_OWNER_GROUP=$(tput setaf 8) # Grey
