@@ -1,0 +1,119 @@
+# eza theme for dotfiles-nixish -> ~/.config/eza/theme.yml (installed by the
+# shell-config step, menu item 1b). Format: https://the.eza.website/en/stable/theme.html
+#
+# Every value below is eza's built-in default (src/theme/default_theme.rs);
+# the ONLY change is the timestamp colour: `date` is a lighter sky blue
+# (ANSI 256-colour 75 = #5fafd7) instead of the default plain Blue.
+#
+# Notes:
+# - Colour numbers must be quoted ("75"): an unquoted number is not a string,
+#   and eza silently ignores the whole file if it does not parse.
+# - `{}` = terminal default style (no colour).
+# - LS_COLORS / EZA_COLORS still apply on top of this file.
+
+colourful: true
+
+filekinds:
+  normal: {}
+  directory:    {foreground: Blue, is_bold: true}
+  symlink:      {foreground: Cyan}
+  pipe:         {foreground: Yellow}
+  block_device: {foreground: Yellow, is_bold: true}
+  char_device:  {foreground: Yellow, is_bold: true}
+  socket:       {foreground: Red, is_bold: true}
+  special:      {foreground: Yellow}
+  executable:   {foreground: Green, is_bold: true}
+  mount_point:  {foreground: Blue, is_bold: true, is_underline: true}
+
+perms:
+  user_read:          {foreground: Yellow, is_bold: true}
+  user_write:         {foreground: Red, is_bold: true}
+  user_execute_file:  {foreground: Green, is_bold: true, is_underline: true}
+  user_execute_other: {foreground: Green, is_bold: true}
+  group_read:         {foreground: Yellow}
+  group_write:        {foreground: Red}
+  group_execute:      {foreground: Green}
+  other_read:         {foreground: Yellow}
+  other_write:        {foreground: Red}
+  other_execute:      {foreground: Green}
+  special_user_file:  {foreground: Purple}
+  special_other:      {foreground: Purple}
+  attribute: {}
+
+# eza's default size colours (by magnitude: B green, K bold green, M yellow,
+# G red, T purple)
+size:
+  major:       {foreground: Green, is_bold: true}
+  minor:       {foreground: Green}
+  number_byte: {foreground: Green}
+  number_kilo: {foreground: Green, is_bold: true}
+  number_mega: {foreground: Yellow}
+  number_giga: {foreground: Red}
+  number_huge: {foreground: Purple}
+  unit_byte:   {foreground: Green}
+  unit_kilo:   {foreground: Green, is_bold: true}
+  unit_mega:   {foreground: Yellow}
+  unit_giga:   {foreground: Red}
+  unit_huge:   {foreground: Purple}
+
+users:
+  user_you:    {foreground: Yellow, is_bold: true}
+  user_other: {}
+  user_root: {}
+  group_yours: {foreground: Yellow, is_bold: true}
+  group_other: {}
+  group_root: {}
+
+links:
+  normal:          {foreground: Red, is_bold: true}
+  multi_link_file: {foreground: Red, background: Yellow}
+
+git:
+  new:        {foreground: Green}
+  modified:   {foreground: Blue}
+  deleted:    {foreground: Red}
+  renamed:    {foreground: Yellow}
+  typechange: {foreground: Purple}
+  ignored:    {is_dimmed: true}
+  conflicted: {foreground: Red}
+
+git_repo:
+  branch_main:  {foreground: Green}
+  branch_other: {foreground: Yellow}
+  git_clean:    {foreground: Green}
+  git_dirty:    {foreground: Yellow, is_bold: true}
+
+security_context:
+  none: {}
+  selinux:
+    colon: {is_dimmed: true}
+    user:  {foreground: Blue}
+    role:  {foreground: Green}
+    typ:   {foreground: Yellow}
+    range: {foreground: Cyan}
+
+file_type:
+  image:      {foreground: Purple}
+  video:      {foreground: Purple, is_bold: true}
+  music:      {foreground: Cyan}
+  lossless:   {foreground: Cyan, is_bold: true}
+  crypto:     {foreground: Green, is_bold: true}
+  document:   {foreground: Green}
+  compressed: {foreground: Red}
+  temp:       {is_dimmed: true}
+  compiled:   {foreground: Yellow}
+  build:      {foreground: Yellow, is_bold: true, is_underline: true}
+  source:     {foreground: Yellow, is_bold: true}
+
+punctuation: {foreground: DarkGray, is_bold: true}
+date:        {foreground: "75"}    # <- the one change: lighter sky blue (default: Blue)
+inode:       {foreground: Purple}
+blocks:      {foreground: Cyan}
+octal:       {foreground: Purple}
+flags: {}
+header:      {is_underline: true}
+
+symlink_path:        {foreground: Cyan}
+control_char:        {foreground: Red}
+broken_symlink:      {foreground: Red}
+broken_path_overlay: {is_underline: true}

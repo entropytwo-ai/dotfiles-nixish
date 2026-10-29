@@ -1323,7 +1323,7 @@ else
     else
         info "git unavailable (or $SRC_DIR is not a git checkout) - downloading files directly..."
         mkdir -p "$SRC_DIR/scripts" "$SRC_DIR/config"
-        DL=(install.sh scripts/xtree.sh scripts/system-setup.sh config/bashrc_append.sh config/zshrc_append.sh)
+        DL=(install.sh scripts/xtree.sh scripts/system-setup.sh config/bashrc_append.sh config/zshrc_append.sh config/eza-theme.yml)
         # only fetch the files this OS needs (see "Trimming" below)
         if $IS_NIXOS || $OPT_KEEP_ALL; then DL+=(flake.nix flake.lock default.nix nix/module.nix nix/packages.nix nix/xtree.nix); fi
         DL+=("$PKG_LIST_REL")   # used on every OS
@@ -1774,6 +1774,38 @@ elif ! grep -qE '(\.|source)[[:space:]]+.*\.bashrc' "$LOGIN_RC"; then
     ok "$(disp "$LOGIN_RC") now loads ~/.bashrc"
 else
     ok "$(disp "$LOGIN_RC") already loads ~/.bashrc - no changes written"
+fi
+
+# eza theme: eza's defaults with a lighter blue timestamp (config/eza-theme.yml)
+printf '\n   %seza theme%s\n' "$C_B" "$C_0"
+EZA_THEME_SRC="$SRC_DIR/config/eza-theme.yml"
+if ! have eza; then
+    info "eza not installed - skipping ~/.config/eza/theme.yml (install the tools, menu 1a / --tools, then re-run)."
+elif [[ ! -f "$EZA_THEME_SRC" ]]; then
+    warn "config/eza-theme.yml missing in $SRC_DIR - eza theme skipped (git -C $SRC_DIR pull)."
+else
+    EZA_CFG="$TARGET_HOME/.config"
+    # eza reads $XDG_CONFIG_HOME/eza; only trust that variable when it is the target user's own
+    [[ "$TARGET_USER" == "$(id -un)" && -n "${XDG_CONFIG_HOME:-}" ]] && EZA_CFG="$XDG_CONFIG_HOME"
+    EZA_THEME="$EZA_CFG/eza/theme.yml"
+    new_cfg=false; [[ -d "$EZA_CFG" ]] || new_cfg=true
+    mkdir -p "$EZA_CFG/eza"
+    if $new_cfg; then fix_owner "$EZA_CFG" "$EZA_CFG/eza"; else fix_owner "$EZA_CFG/eza"; fi
+    if cmp -s "$EZA_THEME_SRC" "$EZA_THEME"; then
+        ok "$(disp "$EZA_THEME") already up to date (lighter timestamp blue)"
+    else
+        if [[ -s "$EZA_THEME" ]]; then
+            cp -p "$EZA_THEME" "$EZA_THEME.dotfiles-nixish.bak.$TS" && fix_owner "$EZA_THEME.dotfiles-nixish.bak.$TS" \
+                && sub "Backup of the previous theme saved: $(disp "$EZA_THEME.dotfiles-nixish.bak.$TS")"
+        fi
+        if install -m 0644 "$EZA_THEME_SRC" "$EZA_THEME"; then
+            fix_owner "$EZA_THEME"
+            ok "$(disp "$EZA_THEME") (lighter timestamp blue)"
+        else
+            warn "Could not write $(disp "$EZA_THEME") - eza keeps its default colours."
+        fi
+    fi
+    if [[ -n "${EZA_CONFIG_DIR:-}" ]]; then info "EZA_CONFIG_DIR is set ($EZA_CONFIG_DIR) - eza reads its theme there instead."; fi
 fi
 
 if have zsh; then

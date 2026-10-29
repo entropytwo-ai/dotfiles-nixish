@@ -51,7 +51,7 @@ sudo       nix=-           # Lets the new user run admin commands (only for "Cre
 locales    cmd=- apt=locales dnf=glibc-langpack-en,glibc-locale-source zypper=glibc-locale pacman=- apk=- nix=-  # Locale data, so the chosen locale can be generated
 
 [tools]
-eza                        # Modern ls with colors, icons and git status (the l / ll aliases); falls back to the eza repo or GitHub
+eza                        # Modern ls with colors, icons and git status (the l / ll aliases; theme: lighter blue timestamps); falls back to the eza repo or GitHub
 duf                        # Disk usage/free space as a colorful table (a better df)
 cowsay                     # ASCII cow that says text (the login greeting)
 fortune    apt=fortune-mod+fortunes-min dnf=fortune-mod pacman=fortune-mod zypper=fortune apk=fortune nix=fortune  # Random quotes for the cow to say, with the quote database

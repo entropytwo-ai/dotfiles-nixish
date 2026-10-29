@@ -3,6 +3,13 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-10-28: eza theme file — lighter timestamp colour
+
+- Added `config/eza-theme.yml` with all eza defaults and the timestamp colour
+  changed to a lighter shade of blue (ANSI 75 / sky blue).
+- The shell-config step (1b) copies it to `~/.config/eza/theme.yml` and
+  creates the directory if needed; skipped gracefully if eza is not installed.
+
 ## 2026-10-28: Dotfiles split into tools, shell config and xtree
 
 - **Menu item 1** now has three parts: **1a Tools**, **1b Shell config** and

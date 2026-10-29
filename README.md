@@ -381,6 +381,9 @@ A block between `# dotfiles-nixish BEGIN` and `# dotfiles-nixish END`:
   the locale exists, so programs never warn "cannot change locale"
 - **Aliases:** `l` and `ll` (eza, falling back to exa, then ls), `la`,
   `cowsays`, `xtree`, and `bat` on Debian - see [Aliases](#aliases)
+- **eza theme:** `~/.config/eza/theme.yml` (from `config/eza-theme.yml`) -
+  eza's default colours with lighter sky-blue timestamps; copied only when
+  eza is installed
 - **Greeting:** every interactive shell shows `fastfetch` with a
   `fortune | cowsay` logo 🐄
 
