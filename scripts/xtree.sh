@@ -320,6 +320,226 @@ build_children() {
   done
 }
 
+# ---------------------------------------------------------------------------
+# eza look for the default scheme. Colours follow eza's built-in default theme
+# (github.com/eza-community/eza, src/theme/default_theme.rs) and honour
+# LS_COLORS and EZA_COLORS the same way eza does. EZ maps eza's own colour keys
+# (the ones EZA_COLORS uses) to SGR codes.
+EZA_MODE=false
+declare -A EZ=(
+  [di]="1;34" [ex]="1;32" [fi]="" [ln]="36" [or]="31" [pi]="33" [bd]="1;33" [cd]="1;33"
+  [so]="1;31" [sp]="33"
+  [ur]="1;33" [uw]="1;31" [ux]="1;4;32" [ue]="1;32" [gr]="33" [gw]="31" [gx]="32"
+  [tr]="33" [tw]="31" [tx]="32" [su]="35" [sf]="35" [xa]=""
+  [nb]="32" [nk]="1;32" [nm]="33" [ng]="31" [nt]="35"
+  [ub]="32" [uk]="1;32" [um]="33" [ug]="31" [ut]="35"
+  [uu]="1;33" [un]="" [uR]="" [gu]="1;33" [gn]="" [gR]=""
+  [ga]="32" [gm]="34" [gd]="31" [gv]="33" [gt]="35" [gi]="2" [gc]="31"
+  [xx]="1;90" [da]="34" [hd]="4"
+  [im]="35" [vi]="1;35" [mu]="36" [lo]="1;36" [cr]="1;32" [do]="32" [co]="31"
+  [tm]="2" [cm]="33" [bu]="1;4;33" [sc]="1;33"
+)
+declare -A _EZ_NAME _EZ_EXT _EZ_TYPEKEY=(
+  [I]=im [V]=vi [M]=mu [L]=lo [C]=cr [D]="do" [Z]=co [T]=tm [O]=cm [B]=bu [S]=sc
+)
+declare -A EZ_GLOB_EXT EZ_PERM_CACHE EZ_MY_GROUPS
+EZ_GLOBS=()            # complex LS_COLORS/EZA_COLORS globs, "pattern<SEP>codes", in order
+EZ_FILETYPES=true      # EZA_COLORS=reset:... turns eza's built-in file types off
+EZ_ME=""
+
+# File name / extension -> eza file type (generated from eza's src/info/filetype.rs).
+ez_load_filetypes() {
+  local _k
+  for _k in Brewfile bsconfig.json BUILD BUILD.bazel build.gradle build.sbt build.xml Cargo.toml \
+    CMakeLists.txt composer.json configure Containerfile Dockerfile Earthfile flake.nix Gemfile \
+    GNUmakefile Gruntfile.coffee Gruntfile.js jsconfig.json Justfile justfile Makefile makefile \
+    meson.build mix.exs package.json Pipfile PKGBUILD Podfile pom.xml Procfile pyproject.toml \
+    Rakefile RoboFile.php SConstruct tsconfig.json Vagrantfile webpack.config.cjs webpack.config.js \
+    WORKSPACE; do _EZ_NAME[$_k]=B; done
+  for _k in id_dsa id_ecdsa id_ecdsa_sk id_ed25519 id_ed25519_sk id_rsa; do _EZ_NAME[$_k]=C; done
+  _EZ_EXT[ninja]=B
+  for _k in arw avif bmp cbr cbz cr2 dvi eps fodg gif heic heif ico j2c j2k jfi jfif jif jp2 jpe jpeg jpf \
+    jpg jpx jxl kra krz nef odg orf pbm pgm png pnm ppm ps psd pxm raw qoi svg tif tiff webp xcf xpm; do _EZ_EXT[$_k]=I; done
+  for _k in avi flv h264 heics m2ts m2v m4v mkv mov mp4 mpeg mpg ogm ogv video vob webm wmv; do _EZ_EXT[$_k]=V; done
+  for _k in aac m4a mka mp2 mp3 ogg opus wma; do _EZ_EXT[$_k]=M; done
+  for _k in aif aifc aiff alac ape flac pcm wav wv; do _EZ_EXT[$_k]=L; done
+  for _k in age asc cer crt csr gpg kbx md5 p12 pem pfx pgp pub sha1 sha224 sha256 sha384 sha512 sig \
+    signature; do _EZ_EXT[$_k]=C; done
+  for _k in djvu doc docx eml fodp fods fodt fotd gdoc key keynote numbers odp ods odt pages pdf ppt pptx \
+    rtf xls xlsm xlsx; do _EZ_EXT[$_k]=D; done
+  for _k in 7z ar arj br bz bz2 bz3 cpio deb dmg gz iso lz lz4 lzh lzma lzo phar qcow qcow2 rar rpm tar taz \
+    tbz tbz2 tc tgz tlz txz tz xz vdi vhd vhdx vmdk z zip zst; do _EZ_EXT[$_k]=Z; done
+  for _k in bak bk bkp crdownload download fcbak fcstd1 fdmdownload part swn swo swp tmp; do _EZ_EXT[$_k]=T; done
+  for _k in a bundle class cma cmi cmo cmx dll dylib elc elf ko lib o obj pyc pyd pyo so zwc; do _EZ_EXT[$_k]=O; done
+  for _k in applescript as asa awk c c++ c++m cabal cc ccm clj cp cpp cppm cr cs css csx cu cxx cxxm cypher \
+    d dart di dpr el elm erl ex exs f f90 fcmacro fcscript fnl for fs fsh fsi fsx gd go gradle \
+    groovy gvy h h++ hh hpp hc hs htc hxx inc inl ino ipynb ixx java jl js jsx kt kts kusto less lhs \
+    lisp ltx lua m malloy matlab ml mli mn nb p pas php pl pm pod pp prql ps1 psd1 psm1 purs py r rb \
+    rs rq sass scala scm scad scss sld sql ss swift tcl tex ts v vb vsh zig; do _EZ_EXT[$_k]=S; done
+}
+
+# Apply one LS_COLORS / EZA_COLORS string. $2=true for EZA_COLORS (eza-only keys).
+ez_apply_colors() {
+  local spec=$1 is_eza=$2 pair key val oldifs=$IFS
+  local -a pairs
+  if [ "$is_eza" == true ] && [[ $spec == reset || $spec == reset:* ]]; then
+    EZ_FILETYPES=false
+    spec=${spec#reset}; spec=${spec#:}
+  fi
+  IFS=:; set -f
+  # shellcheck disable=SC2206
+  pairs=( $spec )
+  set +f; IFS=$oldifs
+  for pair in "${pairs[@]}"; do
+    [[ $pair == *=* ]] || continue
+    key=${pair%%=*}; val=${pair#*=}
+    [[ $val =~ ^[0-9\;]*$ ]] || continue          # e.g. ln=target: not a colour
+    case $key in
+      di|ex|fi|pi|so|bd|cd|ln|or) EZ[$key]=$val ;;
+      sn) EZ[nb]=$val; EZ[nk]=$val; EZ[nm]=$val; EZ[ng]=$val; EZ[nt]=$val ;;
+      sb) EZ[ub]=$val; EZ[uk]=$val; EZ[um]=$val; EZ[ug]=$val; EZ[ut]=$val ;;
+      *)
+        if [[ $key == \*.* && ${key:2} != *[\*\?\[]* ]]; then
+          EZ_GLOB_EXT[${key:2}]=$val
+        elif [[ $key == *[\*\?\[]* ]]; then
+          EZ_GLOBS+=("$key$SEP$val")
+        elif [ "$is_eza" == true ] && [ -n "${EZ[$key]+x}" ]; then
+          EZ[$key]=$val
+        fi ;;
+    esac
+  done
+}
+
+ez_init() {
+  local g
+  EZA_MODE=true
+  ez_load_filetypes
+  [ -n "${LS_COLORS:-}" ] && ez_apply_colors "$LS_COLORS" false
+  [ -n "${EZA_COLORS:-${EXA_COLORS:-}}" ] && ez_apply_colors "${EZA_COLORS:-$EXA_COLORS}" true
+  EZ_ME=$(id -un 2>/dev/null)
+  for g in $(id -Gn 2>/dev/null); do EZ_MY_GROUPS[$g]=1; done
+  # Column headers are underlined, like eza's --header.
+  ez_sgr hd
+  COLOR_PERMISSIONS=$REPLY; COLOR_OWNER_GROUP=$REPLY; COLOR_SIZE=$REPLY
+  COLOR_MODIFIED=$REPLY; COLOR_DIRECTORY=$REPLY; COLOR_RESET=$'\e[0m'
+}
+
+# $1 = colour key -> REPLY = start sequence ("" when the style is empty).
+ez_sgr() {
+  if [ -n "${EZ[$1]}" ]; then REPLY=$'\e['"${EZ[$1]}m"; else REPLY=""; fi
+}
+
+# Paint $2 with the style of key $1 -> REPLY.
+ez_paint() {
+  if [ -n "${EZ[$1]}" ]; then REPLY=$'\e['"${EZ[$1]}m$2"$'\e[0m'; else REPLY=$2; fi
+}
+
+# Colour a permission string per character, as eza does. $1 = perms, $2 = find type.
+# shellcheck disable=SC2209  # bare style keys like cd/tr/ex are strings
+ez_perms() {
+  local perms=$1 t=$2 cache_key="$1|$2" out="" i c key reg=false
+  if [ -n "${EZ_PERM_CACHE[$cache_key]+x}" ]; then REPLY=${EZ_PERM_CACHE[$cache_key]}; return; fi
+  [ "$t" == f ] && reg=true
+  for (( i = 0; i < ${#perms}; i++ )); do
+    c=${perms:i:1}; key=""
+    case $i in
+      0) case $t in d) key=di ;; l) key=ln ;; p) key=pi ;; s) key=so ;; b) key=bd ;; c) key=cd ;; f) key="fi" ;; *) key=sp ;; esac ;;
+      1) [ "$c" == r ] && key=ur ;;
+      2) [ "$c" == w ] && key=uw ;;
+      3) case $c in x) if $reg; then key=ux; else key=ue; fi ;; s) if $reg; then key=su; else key=sf; fi ;; S) key=sf ;; esac ;;
+      4) [ "$c" == r ] && key=gr ;;
+      5) [ "$c" == w ] && key=gw ;;
+      6) case $c in x) key=gx ;; s|S) key=sf ;; esac ;;
+      7) [ "$c" == r ] && key=tr ;;
+      8) [ "$c" == w ] && key=tw ;;
+      9) case $c in x) key=tx ;; t|T) key=sf ;; esac ;;
+      *) key=xa ;;
+    esac
+    if [ "$c" == - ] && (( i > 0 && i < 10 )); then key=xx; fi
+    if [ -n "$key" ]; then ez_paint "$key" "$c"; out+=$REPLY; else out+=$c; fi
+  done
+  EZ_PERM_CACHE[$cache_key]=$out
+  REPLY=$out
+}
+
+# Size text (du -h style) coloured by magnitude: number and unit parts.
+# shellcheck disable=SC2209  # bare style keys like cd/tr/ex are strings
+ez_size() {
+  local s=$1 num unit nk uk
+  num=${s%[KMGTPE]}; unit=${s#"$num"}
+  case $unit in
+    '') nk=nb; uk=ub ;; K) nk=nk; uk=uk ;; M) nk=nm; uk=um ;; G) nk=ng; uk=ug ;; *) nk=nt; uk=ut ;;
+  esac
+  ez_paint "$nk" "$num"; local a=$REPLY
+  if [ -n "$unit" ]; then ez_paint "$uk" "$unit"; REPLY=$a$REPLY; else REPLY=$a; fi
+}
+
+# eza's file-name style -> REPLY (style key or raw codes after "="). $1 = path, $2 = name.
+# shellcheck disable=SC2209  # bare style keys like cd/tr/ex are strings
+ez_name_key() {
+  local p=$1 name=$2 ext="" lower entry i t
+  t=${E_TYPE[$p]}
+  case $t in
+    d) REPLY=di; return ;;
+    f) if [[ ${E_MODE[$p]:3:1} == [xs] ]]; then REPLY=ex; return; fi ;;
+    l) if [[ ${E_XTYPE[$p]} == [NL] ]]; then REPLY=or; else REPLY=ln; fi; return ;;
+    p) REPLY=pi; return ;;
+    s) REPLY=so; return ;;
+    b) REPLY=bd; return ;;
+    c) REPLY=cd; return ;;
+    *) REPLY=sp; return ;;
+  esac
+  # Regular file: LS_COLORS/EZA_COLORS globs first (later entries win), then eza's file types.
+  for (( i = ${#EZ_GLOBS[@]} - 1; i >= 0; i-- )); do
+    entry=${EZ_GLOBS[i]}
+    # shellcheck disable=SC2053  # the pattern is meant to glob
+    if [[ $name == ${entry%%"$SEP"*} ]]; then REPLY="=${entry#*"$SEP"}"; return; fi
+  done
+  [[ $name == *.* ]] && ext=${name##*.}
+  if [ -n "$ext" ] && [ -n "${EZ_GLOB_EXT[$ext]+x}" ]; then REPLY="=${EZ_GLOB_EXT[$ext]}"; return; fi
+  if [ "$EZ_FILETYPES" == true ]; then
+    lower=${name,,}
+    if [[ $lower == readme* ]]; then REPLY=bu; return; fi
+    if [ -n "${_EZ_NAME[$name]+x}" ]; then REPLY=${_EZ_TYPEKEY[${_EZ_NAME[$name]}]}; return; fi
+    if [ -n "$ext" ] && [ -n "${_EZ_EXT[${ext,,}]+x}" ]; then REPLY=${_EZ_TYPEKEY[${_EZ_EXT[${ext,,}]}]}; return; fi
+    if [[ $name == *~ || ( $name == \#* && $name == *\# ) ]]; then REPLY=tm; return; fi
+  fi
+  REPLY="fi"
+}
+
+ez_name() {
+  ez_name_key "$1" "$2"
+  if [[ $REPLY == =* ]]; then
+    local codes=${REPLY#=}
+    if [ -n "$codes" ]; then REPLY=$'\e['"${codes}m$2"$'\e[0m'; else REPLY=$2; fi
+  else
+    ez_paint "$REPLY" "$2"
+  fi
+}
+
+ez_git() {
+  local code=$1 out="" c key i
+  if [ "$code" == '*' ]; then ez_paint gm '*'; REPLY="$REPLY "; return; fi
+  for (( i = 0; i < 2; i++ )); do
+    c=${code:i:1}
+    case $c in
+      A|'?') key=ga ;; M) key=gm ;; D) key=gd ;; R|C) key=gv ;; T) key=gt ;; U) key=gc ;; '!') key=gi ;; *) key="" ;;
+    esac
+    if [ -n "$key" ]; then ez_paint "$key" "$c"; out+=$REPLY; else out+=${c:- }; fi
+  done
+  REPLY=$out
+}
+
+ez_owner() {
+  local u=$1 g=$2 uk gk
+  if [ "$u" == "$EZ_ME" ]; then uk=uu; elif [ "$u" == root ]; then uk=uR; else uk=un; fi
+  if [ -n "${EZ_MY_GROUPS[$g]+x}" ]; then gk=gu; elif [ "$g" == root ]; then gk=gR; else gk=gn; fi
+  ez_paint "$uk" "$u"; local a=$REPLY
+  ez_paint "$gk" "$g"
+  REPLY="$a::$REPLY"
+}
+# ---------------------------------------------------------------------------
+
 # Print one entry (terminal line or CSV row). $1 = path, $2 = parent ("" for root), $3 = tree prefix.
 print_entry() {
   local p=$1 parent=$2 prefix=$3
@@ -358,6 +578,11 @@ print_entry() {
     return
   fi
 
+  if [ "$EZA_MODE" == true ]; then
+    print_entry_eza
+    return
+  fi
+
   local out=$prefix
   [ "$show_permissions" == true ] && out+="${COLOR_PERMISSIONS}${perms}${COLOR_RESET} "
   [ "$show_usergroup" == true ] && out+="${COLOR_OWNER_GROUP}${E_USER[$p]}::${E_GROUP[$p]}${COLOR_RESET} "
@@ -384,6 +609,32 @@ print_entry() {
   fi
   printf '%s\n' "$out"
   [ -n "$acl" ] && printf '%s\n' "${COLOR_OWNER_GROUP}${acl}${COLOR_RESET}"
+}
+
+# Terminal line in the eza look (uses print_entry's locals via dynamic scope).
+print_entry_eza() {
+  local out=""
+  if [ -n "$prefix" ]; then ez_paint xx "$prefix"; out=$REPLY; fi
+  if [ "$show_permissions" == true ]; then ez_perms "$perms" "${E_TYPE[$p]}"; out+="$REPLY "; fi
+  if [ "$show_usergroup" == true ]; then ez_owner "${E_USER[$p]}" "${E_GROUP[$p]}"; out+="$REPLY "; fi
+  if [ "$heatmap" == true ] && [ "$size_color" != "$COLOR_SIZE" ]; then
+    out+="${size_color}${hs}${COLOR_RESET} "
+  else
+    ez_size "$hs"; out+="$REPLY "
+  fi
+  if [ "$heatmap" == true ]; then
+    local filled=$(( (pct + 5) / 10 ))
+    for (( k = 0; k < 10; k++ )); do if (( k < filled )); then bar+="█"; else bar+="░"; fi; done
+    printf -v bar '%3d%% %s' "$pct" "$bar"
+    out+="${size_color}${bar}${COLOR_RESET} "
+  fi
+  if [ "$show_datetime" == true ]; then ez_paint da "${E_DATE[$p]}"; out+="$REPLY "; fi
+  if [ "$GIT_ENABLED" == true ]; then
+    if [ -z "$code" ]; then out+="   "; else ez_git "$code"; out+="$REPLY "; fi
+  fi
+  ez_name "$p" "$name"; out+=$REPLY
+  printf '%s\n' "$out"
+  [ -n "$acl" ] && printf '%s\n' "$acl"
 }
 
 print_tree() {
@@ -514,6 +765,7 @@ root=$1
 while [[ $root == */ && $root != / ]]; do root=${root%/}; done
 
 set_color_scheme "$scheme"
+[ "$scheme" == default ] && [ "$_XT_COLOR" == 1 ] && ez_init
 C_HEAT_HIGH=$(tput bold; tput setaf 1)  # >= 50% of parent
 C_HEAT_MID=$(tput setaf 208)            # >= 25% (orange; yellow on 8-colour terminals)
 C_HEAT_LOW=$(tput setaf 3)              # >= 10%
@@ -568,5 +820,6 @@ if [ "$export_csv" != true ]; then
   if [ "$include_files" == true ]; then
     summary+=", $COUNT_FILES file$( (( COUNT_FILES == 1 )) || echo s)"
   fi
-  printf '\n%s, %s total\n' "$summary" "${COLOR_SIZE}${REPLY}${COLOR_RESET}"
+  if [ "$EZA_MODE" == true ]; then ez_size "$REPLY"; else REPLY="${COLOR_SIZE}${REPLY}${COLOR_RESET}"; fi
+  printf '\n%s, %s total\n' "$summary" "$REPLY"
 fi
