@@ -119,7 +119,8 @@ select_random_theme() {
 
 # Configuration for column headers
 HEADER_PERMISSIONS="Permissions"
-HEADER_OWNER_GROUP="Owner::Group"
+HEADER_OWNER="Owner"
+HEADER_GROUP="Group"
 HEADER_SIZE="Size"
 HEADER_USAGE="Usage"
 HEADER_MODIFIED="Last Modified"
@@ -132,7 +133,8 @@ FLAG_INCLUDE_FILES="f"
 FLAG_MAX_DEPTH="L"
 FLAG_SHOW_PERMISSIONS="p"
 FLAG_SHOW_DATETIME="t"
-FLAG_SHOW_USERGROUP="u"
+FLAG_SHOW_OWNER="u"
+FLAG_SHOW_GROUP="g"
 FLAG_INCLUDE_HIDDEN="a"
 FLAG_EXPORT_CSV="C"
 FLAG_COLOR_SCHEME="s"
@@ -142,7 +144,7 @@ FLAG_SORT="o"
 FLAG_REVERSE="O"
 FLAG_DIRS_FIRST="D"
 FLAG_HEATMAP="H"
-FLAG_GIT="g"
+FLAG_GIT="G"
 
 SEP=$'\x1f'   # separator for child lists (never appears in real file names)
 
@@ -534,12 +536,15 @@ ez_git() {
 }
 
 ez_owner() {
-  local u=$1 g=$2 uk gk
+  local u=$1 uk
   if [ "$u" == "$EZ_ME" ]; then uk=uu; elif [ "$u" == root ]; then uk=uR; else uk=un; fi
+  ez_paint "$uk" "$u"
+}
+
+ez_group() {
+  local g=$1 gk
   if [ -n "${EZ_MY_GROUPS[$g]+x}" ]; then gk=gu; elif [ "$g" == root ]; then gk=gR; else gk=gn; fi
-  ez_paint "$uk" "$u"; local a=$REPLY
   ez_paint "$gk" "$g"
-  REPLY="$a::$REPLY"
 }
 # ---------------------------------------------------------------------------
 
@@ -570,7 +575,8 @@ print_entry() {
   if [ "$export_csv" == true ]; then
     local row=""
     [ "$show_permissions" == true ] && row+="$perms,"
-    [ "$show_usergroup" == true ] && row+="${E_USER[$p]}::${E_GROUP[$p]},"
+    [ "$show_owner" == true ] && row+="${E_USER[$p]},"
+    [ "$show_group" == true ] && row+="${E_GROUP[$p]},"
     row+="$hs,"
     [ "$heatmap" == true ] && row+="$pct,"
     [ "$show_datetime" == true ] && row+="${E_DATE[$p]},"
@@ -588,7 +594,8 @@ print_entry() {
 
   local out=$prefix
   [ "$show_permissions" == true ] && out+="${COLOR_PERMISSIONS}${perms}${COLOR_RESET} "
-  [ "$show_usergroup" == true ] && out+="${COLOR_OWNER_GROUP}${E_USER[$p]}::${E_GROUP[$p]}${COLOR_RESET} "
+  [ "$show_owner" == true ] && out+="${COLOR_OWNER_GROUP}${E_USER[$p]}${COLOR_RESET} "
+  [ "$show_group" == true ] && out+="${COLOR_OWNER_GROUP}${E_GROUP[$p]}${COLOR_RESET} "
   out+="${size_color}${hs}${COLOR_RESET} "
   if [ "$heatmap" == true ]; then
     local filled=$(( (pct + 5) / 10 ))
@@ -619,7 +626,8 @@ print_entry_eza() {
   local out=""
   if [ -n "$prefix" ]; then ez_paint xx "$prefix"; out=$REPLY; fi
   if [ "$show_permissions" == true ]; then ez_perms "$perms" "${E_TYPE[$p]}"; out+="$REPLY "; fi
-  if [ "$show_usergroup" == true ]; then ez_owner "${E_USER[$p]}" "${E_GROUP[$p]}"; out+="$REPLY "; fi
+  if [ "$show_owner" == true ]; then ez_owner "${E_USER[$p]}"; out+="$REPLY "; fi
+  if [ "$show_group" == true ]; then ez_group "${E_GROUP[$p]}"; out+="$REPLY "; fi
   if [ "$heatmap" == true ] && [ "$size_color" != "$COLOR_SIZE" ]; then
     out+="${size_color}${hs}${COLOR_RESET} "
   else
@@ -667,7 +675,8 @@ show_usage() {
   printf "  -%s max_depth\t%s\n" "$FLAG_MAX_DEPTH" "Set maximum depth for directory traversal (default 3)"
   printf "  -%s\t\t%s\n" "$FLAG_SHOW_PERMISSIONS" "Show permissions"
   printf "  -%s\t\t%s\n" "$FLAG_SHOW_DATETIME" "Show modification date/time"
-  printf "  -%s\t\t%s\n" "$FLAG_SHOW_USERGROUP" "Show owner and group"
+  printf "  -%s\t\t%s\n" "$FLAG_SHOW_OWNER" "Show owner (user)"
+  printf "  -%s\t\t%s\n" "$FLAG_SHOW_GROUP" "Show group"
   printf "  -%s\t\t%s\n" "$FLAG_INCLUDE_HIDDEN" "Include hidden files and directories"
   printf "  -%s csv_file\t%s\n" "$FLAG_EXPORT_CSV" "Export output to a CSV file"
   printf "  -%s scheme\t%s\n" "$FLAG_COLOR_SCHEME" "Select color scheme (default, alternative, christmas, halloween, ghost)"
@@ -711,7 +720,8 @@ include_files=false
 max_depth=3
 show_permissions=false
 show_datetime=false
-show_usergroup=false
+show_owner=false
+show_group=false
 include_hidden=false
 show_acl=false
 export_csv=false
@@ -724,13 +734,14 @@ heatmap=false
 show_git=false
 
 # Parse the flags
-while getopts "$FLAG_INCLUDE_FILES$FLAG_MAX_DEPTH:$FLAG_SHOW_PERMISSIONS$FLAG_SHOW_DATETIME$FLAG_SHOW_USERGROUP$FLAG_INCLUDE_HIDDEN$FLAG_EXPORT_CSV:$FLAG_COLOR_SCHEME:$FLAG_RANDOM_THEME$FLAG_SHOW_ACL$FLAG_SORT:$FLAG_REVERSE$FLAG_DIRS_FIRST$FLAG_HEATMAP$FLAG_GIT" opt; do
+while getopts "$FLAG_INCLUDE_FILES$FLAG_MAX_DEPTH:$FLAG_SHOW_PERMISSIONS$FLAG_SHOW_DATETIME$FLAG_SHOW_OWNER$FLAG_SHOW_GROUP$FLAG_INCLUDE_HIDDEN$FLAG_EXPORT_CSV:$FLAG_COLOR_SCHEME:$FLAG_RANDOM_THEME$FLAG_SHOW_ACL$FLAG_SORT:$FLAG_REVERSE$FLAG_DIRS_FIRST$FLAG_HEATMAP$FLAG_GIT" opt; do
   case $opt in
     "$FLAG_INCLUDE_FILES")    include_files=true ;;
     "$FLAG_MAX_DEPTH")        max_depth=$OPTARG ;;
     "$FLAG_SHOW_PERMISSIONS") show_permissions=true ;;
     "$FLAG_SHOW_DATETIME")    show_datetime=true ;;
-    "$FLAG_SHOW_USERGROUP")   show_usergroup=true ;;
+    "$FLAG_SHOW_OWNER")       show_owner=true ;;
+    "$FLAG_SHOW_GROUP")       show_group=true ;;
     "$FLAG_INCLUDE_HIDDEN")   include_hidden=true ;;
     "$FLAG_EXPORT_CSV")       export_csv=true; csv_file=$OPTARG ;;
     "$FLAG_COLOR_SCHEME")     scheme=$OPTARG ;;
@@ -792,7 +803,8 @@ build_children
 if [ "$export_csv" == true ]; then
   csv_header=""
   [ "$show_permissions" == true ] && csv_header+="${HEADER_PERMISSIONS},"
-  [ "$show_usergroup" == true ] && csv_header+="${HEADER_OWNER_GROUP},"
+  [ "$show_owner" == true ] && csv_header+="${HEADER_OWNER},"
+  [ "$show_group" == true ] && csv_header+="${HEADER_GROUP},"
   csv_header+="${HEADER_SIZE},"
   [ "$heatmap" == true ] && csv_header+="${HEADER_USAGE} %,"
   [ "$show_datetime" == true ] && csv_header+="${HEADER_MODIFIED},"
@@ -803,7 +815,8 @@ if [ "$export_csv" == true ]; then
 else
   header=""
   [ "$show_permissions" == true ] && header+="${COLOR_PERMISSIONS}${HEADER_PERMISSIONS}${COLOR_RESET} "
-  [ "$show_usergroup" == true ] && header+="${COLOR_OWNER_GROUP}${HEADER_OWNER_GROUP}${COLOR_RESET} "
+  [ "$show_owner" == true ] && header+="${COLOR_OWNER_GROUP}${HEADER_OWNER}${COLOR_RESET} "
+  [ "$show_group" == true ] && header+="${COLOR_OWNER_GROUP}${HEADER_GROUP}${COLOR_RESET} "
   header+="${COLOR_SIZE}${HEADER_SIZE}${COLOR_RESET} "
   [ "$heatmap" == true ] && header+="${COLOR_SIZE}${HEADER_USAGE}${COLOR_RESET} "
   [ "$show_datetime" == true ] && header+="${COLOR_MODIFIED}${HEADER_MODIFIED}${COLOR_RESET} "
