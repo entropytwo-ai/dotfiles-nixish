@@ -414,8 +414,9 @@ ez_init() {
   local g
   EZA_MODE=true
   ez_load_filetypes
-  # Brighter than eza's dark blue (34) for readability: sky blue on 256-colour terminals, else bright blue.
-  if (( ${_XT_NCOLORS:-8} >= 256 )); then EZ[da]="38;5;117"; else EZ[da]="94"; fi
+  # Timestamps: 256-colour blue #75 (#5fafff), the date blue eza shows. Sent even when terminfo
+  # claims fewer colours (eza does the same); only the Linux text console gets plain bright blue.
+  if [ "${TERM:-}" == linux ]; then EZ[da]="94"; else EZ[da]="38;5;75"; fi
   [ -n "${LS_COLORS:-}" ] && ez_apply_colors "$LS_COLORS" false
   [ -n "${EZA_COLORS:-${EXA_COLORS:-}}" ] && ez_apply_colors "${EZA_COLORS:-$EXA_COLORS}" true
   EZ_ME=$(id -un 2>/dev/null)
