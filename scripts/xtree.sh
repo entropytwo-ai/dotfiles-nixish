@@ -414,6 +414,8 @@ ez_init() {
   local g
   EZA_MODE=true
   ez_load_filetypes
+  # Brighter than eza's dark blue (34) for readability: sky blue on 256-colour terminals, else bright blue.
+  if (( ${_XT_NCOLORS:-8} >= 256 )); then EZ[da]="38;5;117"; else EZ[da]="94"; fi
   [ -n "${LS_COLORS:-}" ] && ez_apply_colors "$LS_COLORS" false
   [ -n "${EZA_COLORS:-${EXA_COLORS:-}}" ] && ez_apply_colors "${EZA_COLORS:-$EXA_COLORS}" true
   EZ_ME=$(id -un 2>/dev/null)
