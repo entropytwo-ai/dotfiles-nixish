@@ -623,10 +623,10 @@ CHANGELOG.md                what each change added
 ```
 
 
-[badge-bash]: https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white
-[badge-zsh]: https://img.shields.io/badge/bonus-zsh-F15A24?logo=zsh&logoColor=white
-[badge-distros]: https://img.shields.io/badge/distros-Debian%20%7C%20Ubuntu%20%7C%20Fedora%20%7C%20RHEL%20%7C%20Arch%20%7C%20openSUSE%20%7C%20Alpine%20%7C%20NixOS-blue
-[badge-nixos]: https://img.shields.io/badge/NixOS-flakes%20%26%20no%20flakes-5277C3?logo=nixos&logoColor=white
-[badge-safe]: https://img.shields.io/badge/re--run-safe-success
+[badge-bash]: .github/badges/bash.svg
+[badge-zsh]: .github/badges/zsh.svg
+[badge-distros]: .github/badges/distros.svg
+[badge-nixos]: .github/badges/nixos.svg
+[badge-safe]: .github/badges/safe.svg
 
 <sub>[↑ Back to contents](#table-of-contents)</sub>
