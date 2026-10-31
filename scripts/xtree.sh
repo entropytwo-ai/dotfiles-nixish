@@ -179,6 +179,47 @@ csv_quote() {
   REPLY="\"${1//\"/\"\"}\""
 }
 
+# Fallback for find without -printf (BusyBox on Alpine, etc.): find -print0
+# for the paths, then one batched `stat -c` for the metadata.
+collect_entries_portable() {
+  local root=$1 ft mt dt u g m b bs p t x
+  local -a expr=() paths=()
+  [ "$include_hidden" == true ] || expr+=( '(' -name '.*' -prune ')' -o )
+  # No -xtype here: keep symlinks and drop the ones not pointing at a directory below.
+  [ "$include_files" == true ] || expr+=( '(' ! -type d ! -type l ')' -o )
+  mapfile -d '' -t paths < <(
+    find "$root" -maxdepth 0 -print0 2>/dev/null
+    if (( max_depth > 0 )); then
+      find "$root" -mindepth 1 -maxdepth "$max_depth" "${expr[@]}" -print0 2>/dev/null
+    fi
+  )
+  (( ${#paths[@]} )) || return 0
+  while IFS='|' read -r ft mt dt u g m b bs p; do
+    [ -n "$p" ] || continue
+    case $ft in
+      "regular file"|"regular empty file") t=f ;;
+      directory) t=d ;; "symbolic link") t=l ;; fifo) t=p ;; socket) t=s ;;
+      "block special file") t=b ;; "character special file") t=c ;; *) t='?' ;;
+    esac
+    x=$t
+    if [ "$t" == l ]; then
+      if [ -d "$p" ]; then x=d; elif [ -f "$p" ]; then x=f; elif [ -p "$p" ]; then x=p
+      elif [ -S "$p" ]; then x=s; elif [ -b "$p" ]; then x=b; elif [ -c "$p" ]; then x=c
+      else x=N; fi
+      [ "$include_files" == true ] || [ "$x" == d ] || [ "$p" == "$root" ] || continue
+    fi
+    E_TYPE[$p]=$t
+    E_XTYPE[$p]=$x
+    E_MTIME[$p]=$mt
+    E_DATE[$p]=${dt:0:19}
+    E_USER[$p]=$u
+    E_GROUP[$p]=$g
+    E_MODE[$p]=$m
+    E_BYTES[$p]=$(( ${b:-0} * ${bs:-512} ))
+    ALL_PATHS+=("$p")
+  done < <(printf '%s\0' "${paths[@]}" | xargs -0 stat -c '%F|%Y|%y|%U|%G|%A|%b|%B|%n' -- 2>/dev/null)
+}
+
 # One pass of find (metadata) + one pass of du (directory totals) instead of
 # ls/stat/du per entry. find does not follow symlinks, so linked directories
 # are listed but not descended into (no loops).
@@ -189,32 +230,46 @@ collect_entries() {
   [ "$include_hidden" == true ] || expr+=( '(' -name '.*' -prune ')' -o )
   [ "$include_files" == true ] || expr+=( '(' ! -xtype d ')' -o )
 
-  mapfile -d '' -t f < <(
-    find "$root" -maxdepth 0 -printf "$fmt" 2>/dev/null
-    if (( max_depth > 0 )); then
-      find "$root" -mindepth 1 -maxdepth "$max_depth" "${expr[@]}" -printf "$fmt" 2>/dev/null
-    fi
-  )
-  n=${#f[@]}
-  for (( i = 0; i + 8 < n; i += 9 )); do
-    p=${f[i+8]}
-    E_TYPE[$p]=${f[i]}
-    E_XTYPE[$p]=${f[i+1]}
-    E_MTIME[$p]=${f[i+2]%.*}
-    E_DATE[$p]=${f[i+3]%.*}
-    E_USER[$p]=${f[i+4]}
-    E_GROUP[$p]=${f[i+5]}
-    E_MODE[$p]=${f[i+6]}
-    E_BYTES[$p]=$(( ${f[i+7]:-0} * 512 ))   # disk usage of non-directories
-    ALL_PATHS+=("$p")
-  done
+  if find "$root" -maxdepth 0 -printf '' >/dev/null 2>&1; then
+    # GNU find: all metadata in one pass.
+    mapfile -d '' -t f < <(
+      find "$root" -maxdepth 0 -printf "$fmt" 2>/dev/null
+      if (( max_depth > 0 )); then
+        find "$root" -mindepth 1 -maxdepth "$max_depth" "${expr[@]}" -printf "$fmt" 2>/dev/null
+      fi
+    )
+    n=${#f[@]}
+    for (( i = 0; i + 8 < n; i += 9 )); do
+      p=${f[i+8]}
+      E_TYPE[$p]=${f[i]}
+      E_XTYPE[$p]=${f[i+1]}
+      E_MTIME[$p]=${f[i+2]%.*}
+      E_DATE[$p]=${f[i+3]%.*}
+      E_USER[$p]=${f[i+4]}
+      E_GROUP[$p]=${f[i+5]}
+      E_MODE[$p]=${f[i+6]}
+      E_BYTES[$p]=$(( ${f[i+7]:-0} * 512 ))   # disk usage of non-directories
+      ALL_PATHS+=("$p")
+    done
+  else
+    collect_entries_portable "$root"
+  fi
 
   # Directory totals (includes hidden content, like `du -sh` did before).
-  mapfile -d '' -t d < <(du -B1 -d "$max_depth" -0 -- "$root" 2>/dev/null)
-  for line in "${d[@]}"; do
-    p=${line#*$'\t'}
-    [ -n "${E_TYPE[$p]+x}" ] && E_BYTES[$p]=${line%%$'\t'*}
-  done
+  if du -B1 -d 0 -0 -- "$root" >/dev/null 2>&1; then
+    mapfile -d '' -t d < <(du -B1 -d "$max_depth" -0 -- "$root" 2>/dev/null)
+    for line in "${d[@]}"; do
+      p=${line#*$'\t'}
+      [ -n "${E_TYPE[$p]+x}" ] && E_BYTES[$p]=${line%%$'\t'*}
+    done
+  else
+    # BusyBox/BSD du: KiB, newline-separated.
+    mapfile -t d < <(du -k -d "$max_depth" -- "$root" 2>/dev/null)
+    for line in "${d[@]}"; do
+      p=${line#*$'\t'}
+      [ -n "${E_TYPE[$p]+x}" ] && E_BYTES[$p]=$(( ${line%%$'\t'*} * 1024 ))
+    done
+  fi
 
   # Permissions as ls shows them (keeps the ACL "+" marker), one batched call.
   if [ "$show_permissions" == true ] || [ "$show_acl" == true ]; then
