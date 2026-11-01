@@ -48,7 +48,7 @@ sys_write() {
         return 0
     fi
     if sudo_ test -e "$f"; then
-        if sudo_ cmp -s "$tmp" "$f"; then sub "$f is already up to date"; return 0; fi
+        if [[ "$(cksum <"$tmp")" == "$(sudo_ cat "$f" | cksum)" ]]; then sub "$f is already up to date"; return 0; fi
         sudo_ cp -p "$f" "$f.dotfiles-nixish.bak.$TS" && sub "Backup: $f.dotfiles-nixish.bak.$TS"
         sudo_ tee "$f" < "$tmp" >/dev/null || { warn "Could not write $f"; return 1; }
         sub "Updated $f"

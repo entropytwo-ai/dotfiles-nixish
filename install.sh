@@ -175,6 +175,8 @@ ltrim() { local s="$1"; printf '%s' "${s#"${s%%[![:space:]]*}"}"; }
 
 
 have() { command -v "$1" >/dev/null 2>&1; }
+# same content? (cksum is coreutils; cmp/diffutils is missing on minimal Fedora/RHEL/Arch)
+same_file() { [[ -r "$1" && -r "$2" && "$(cksum <"$1")" == "$(cksum <"$2")" ]]; }
 # Package managers and admin tools live in sbin, which a normal user's PATH
 # often lacks (Alpine: /sbin/apk; some su/sudo setups) - add the sbin dirs.
 for _d in /usr/local/sbin /usr/sbin /sbin; do
@@ -695,10 +697,25 @@ pm_install() {  # pm_install pkg... ; returns non-zero on failure, never aborts
         yum)    "${SUDO[@]}" yum install -y -q "$@" ;;
         pacman) "${SUDO[@]}" pacman -S --noconfirm --needed "$@" ;;
         zypper) "${SUDO[@]}" zypper --non-interactive --quiet install --no-recommends "$@" ;;
-        apk)    "${SUDO[@]}" apk add -q "$@" ;;
+        apk)    apk_tag_repos "$@" && "${SUDO[@]}" apk add -q "$@" ;;
         nix)    nix_install "$@" ;;
         *)      return 1 ;;
     esac >/dev/null 2>&1
+}
+
+# Alpine: "name@testing" in the package list = take it from edge/testing (some
+# tools, like duf and cowsay, exist only there). Adds the tagged repository
+# once; apk then uses it ONLY for packages asked for with @testing.
+apk_tag_repos() {
+    local a base
+    for a in "$@"; do
+        [[ "$a" == *@testing ]] || continue
+        grep -qs '^@testing ' /etc/apk/repositories && return 0
+        base="$(grep -m1 -oE '^https?://[^ ]+/alpine/' /etc/apk/repositories 2>/dev/null)"
+        echo "@testing ${base:-https://dl-cdn.alpinelinux.org/alpine/}edge/testing" \
+            | "${SUDO[@]}" tee -a /etc/apk/repositories >/dev/null && "${SUDO[@]}" apk update -q
+        return
+    done
 }
 
 # Nix installs go into the *target user's* profile (no sudo needed)
@@ -794,7 +811,7 @@ pm_has() {
         apt)            dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed' ;;
         dnf|yum|zypper) rpm -q --whatprovides "$1" >/dev/null 2>&1 ;;
         pacman)         pacman -Q "$1" >/dev/null 2>&1 ;;
-        apk)            apk info -e "$1" >/dev/null 2>&1 ;;
+        apk)            apk info -e "${1%@testing}" >/dev/null 2>&1 ;;
         *)              return 1 ;;
     esac
 }
@@ -1261,6 +1278,26 @@ fallback_fastfetch() {
         && ok "fastfetch (GitHub tarball -> /usr/local/bin/fastfetch)"
 }
 
+# ---------------------------------------------------------------- tldr fallback
+# Static tealdeer from GitHub -> /usr/local/bin/tldr (ahead of /usr/bin in PATH).
+# Also used when the distro's tldr client is too old to download pages: the
+# Haskell tldr 0.9 (Debian 12, Ubuntu 24.04) and tealdeer < 1.7 fetch
+# tldr.sh/assets/tldr.zip, which no longer exists.
+tealdeer_github() {
+    [[ "$PM" == "nix" ]] && return 1
+    local a
+    case "$ARCH" in
+        x86_64) a="x86_64-musl" ;; aarch64|arm64) a="aarch64-musl" ;;
+        armv7l) a="armv7-musleabihf" ;; armv6l) a="arm-musleabihf" ;; i686) a="i686-musl" ;;
+        *) return 1 ;;
+    esac
+    info "Downloading the tealdeer (tldr) release binary (tealdeer-linux-$a)..."
+    fetch "https://github.com/tealdeer-rs/tealdeer/releases/latest/download/tealdeer-linux-$a" "$WORKDIR/tldr" \
+        && "${SUDO[@]}" install -m 0755 "$WORKDIR/tldr" /usr/local/bin/tldr \
+        && ok "tldr (tealdeer GitHub release -> /usr/local/bin/tldr)"
+}
+fallback_tldr() { tealdeer_github; }
+
 # ---------------------------------------------------------------- extra repos (RHEL family)
 enable_epel() {
     [[ "$PM" == "dnf" || "$PM" == "yum" ]] || return 0
@@ -1514,7 +1551,7 @@ if $OPT_DOTFILES; then
 # A user-edited list in the checkout wins over the one downloaded at the
 # start (unless --package-list was given)
 if [[ -z "$OPT_PKG_LIST" && -r "$SRC_DIR/$PKG_LIST_REL" ]] \
-   && ! cmp -s "$SRC_DIR/$PKG_LIST_REL" "$WORKDIR/package_list.txt"; then
+   && ! same_file "$SRC_DIR/$PKG_LIST_REL" "$WORKDIR/package_list.txt"; then
     cp "$SRC_DIR/$PKG_LIST_REL" "$WORKDIR/package_list.txt" \
         && load_package_list "$WORKDIR/package_list.txt" \
         && PKG_LIST_SRC="$SRC_DIR/$PKG_LIST_REL" \
@@ -1558,6 +1595,8 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]] && [[ ${#TOOLS[@]} -gt 0 ]]; then
         # the Haskell tldr (Debian/Ubuntu) fails when ~/.local/share is missing
         as_target mkdir -p "$TARGET_HOME/.local/share" 2>/dev/null
         if as_target timeout 90 tldr --update >/dev/null 2>&1; then ok "tldr page cache updated"
+        elif { [[ -x /usr/local/bin/tldr ]] || { info "This tldr client cannot download pages any more (old download address)."; tealdeer_github; }; } \
+            && as_target timeout 90 /usr/local/bin/tldr --update >/dev/null 2>&1; then ok "tldr page cache updated (tealdeer)"
         else info "(tldr cache update skipped - run 'tldr --update' later if needed)"; fi
     fi
 fi
@@ -1738,7 +1777,7 @@ install_block() {  # install_block <rcfile> <snippet>
     # drop trailing blank lines left behind by a previous block
     sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp.base" > "$tmp"
     { [[ -s "$tmp" ]] && echo; cat "$snippet"; } >> "$tmp"
-    if cmp -s "$tmp" "$rc"; then
+    if same_file "$tmp" "$rc"; then
         ok "$d already up to date - no changes written"
     else
         if [[ -s "$rc" ]]; then
@@ -1800,7 +1839,7 @@ else
     new_cfg=false; [[ -d "$EZA_CFG" ]] || new_cfg=true
     mkdir -p "$EZA_CFG/eza"
     if $new_cfg; then fix_owner "$EZA_CFG" "$EZA_CFG/eza"; else fix_owner "$EZA_CFG/eza"; fi
-    if cmp -s "$EZA_THEME_SRC" "$EZA_THEME"; then
+    if same_file "$EZA_THEME_SRC" "$EZA_THEME"; then
         ok "$(disp "$EZA_THEME") already up to date (lighter timestamp blue)"
     else
         if [[ -s "$EZA_THEME" ]]; then

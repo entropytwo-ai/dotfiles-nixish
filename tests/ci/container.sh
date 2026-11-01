@@ -29,6 +29,8 @@ if [ -n "${NIX_CONTAINER:-}" ]; then
     nix-channel --update
     nix-env -iA nixpkgs.gawk nixpkgs.gnused nixpkgs.diffutils nixpkgs.procps \
         nixpkgs.util-linux nixpkgs.ncurses nixpkgs.glibcLocales >/dev/null
+    # NixOS writes /etc/set-environment (Nix's zsh sources it) with LOCALE_ARCHIVE
+    echo "export LOCALE_ARCHIVE=$(readlink -f /root/.nix-profile)/lib/locale/locale-archive" > /etc/set-environment
 elif command -v apt-get >/dev/null; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq && apt-get install -y -qq sudo >/dev/null
@@ -55,7 +57,7 @@ fi
 # a private copy of the checkout (with .git), owned by the user - like a real clone
 CHECKOUT="$HOME_DIR/dotfiles-nixish"
 cp -a /repo "$CHECKOUT"
-[ "$TEST_USER" = root ] || chown -R "$TEST_USER:" "$CHECKOUT"
+chown -R "$TEST_USER:" "$CHECKOUT"   # (also for root: git refuses a checkout owned by the runner's uid)
 
 as_user() {  # as_user <command string>  - run like the user would, in a login shell
     # via a file + explicit 'bash -l': busybox su (Alpine) starts no login shell

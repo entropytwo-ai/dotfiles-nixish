@@ -92,6 +92,11 @@ if $WANT_TOOLS; then
                        else fail "fortune prints no quote: $out"; fi ;;
             tldr)      expect "tldr shows the tar page (page cache present)" "tldr tar" 'tar (-|--)?[a-z]' ;;
             fastfetch) expect "fastfetch runs" "fastfetch --pipe -s os" '[A-Za-z]' ;;
+            btop)      out="$(uout 'btop --version 2>&1 </dev/null; echo "rc=$?"')"
+                       if grep -q '^rc=0$' <<<"$out"; then pass "btop runs (btop --version)"
+                       elif grep -q 'Operation not permitted' <<<"$out"; then
+                           note "btop has file capabilities (setcap) that a Docker container does not allow - not a problem on a real system"
+                       else fail "btop runs (btop --version) - got: $(head -3 <<<"$out" | tr '\n' '|')"; fi ;;
             *)         expect "$t runs ($t --version)" "command -v $t >/dev/null && $t --version 2>&1 </dev/null; echo \"rc=\$?\"" '^rc=0$' ;;
         esac
     done
