@@ -21,5 +21,11 @@
           paths = (import ./nix/packages.nix pkgs { }) ++ [ xtree ];
         };
       });
+
+      # nix flake check: boots a NixOS VM with the module (needs KVM) - see tests/
+      checks.x86_64-linux.nixos-module = import ./tests/nixos-vm.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        module = self.nixosModules.default;
+      };
     };
 }
