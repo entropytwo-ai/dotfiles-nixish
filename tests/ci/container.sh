@@ -123,7 +123,14 @@ if [ "$SCENARIO" = full ]; then
     as_user "cd '$CHECKOUT' && bash install.sh --uninstall --dry-run --purge-packages --keep-starship" >/tmp/plan1.log 2>&1
     as_user "cd '$CHECKOUT' && bash install.sh --uninstall --dry-run --purge-starship" >/tmp/plan2.log 2>&1
     cat /tmp/plan1.log /tmp/plan2.log
-    if grep -q 'starship kept' /tmp/plan1.log && ! grep -q '(starship' /tmp/plan1.log \
+    if [ "${NIX_CONTAINER:-}" = 1 ]; then
+        # Nix packages (starship included) are never removed by --uninstall
+        if grep -q 'Nix packages: not removed' /tmp/plan2.log && ! grep -q '(starship' /tmp/plan2.log; then
+            echo "  ✔ Nix: packages incl. starship left to nix (not removed)"
+        else
+            echo "::error title=uninstall plan::Nix plan should not remove packages"; exit 1
+        fi
+    elif grep -q 'starship kept' /tmp/plan1.log && ! grep -q '(starship' /tmp/plan1.log \
         && grep -q '(starship' /tmp/plan2.log && grep -q 'Tool packages kept' /tmp/plan2.log; then
         echo "  ✔ --keep-starship keeps starship, --purge-starship removes only starship"
     else
