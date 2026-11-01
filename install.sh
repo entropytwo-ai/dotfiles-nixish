@@ -1584,7 +1584,7 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]] && [[ ${#TOOLS[@]} -gt 0 ]]; then
         esac
         for p in $fdb; do pm_install "$p" || true; done
         if fortune_ok; then ok "fortune quote database installed"
-        else warn "fortune has no quote database - install your distro's fortunes package manually."; fi
+        else warn "fortune has no quote database - install your distro's fortunes package manually. (fortune says: $(fortune 2>&1 | head -n 1 | cut -c1-100))"; fi
     fi
 
     # Debian/Ubuntu name the bat binary "batcat" - provide a real `bat` command too
