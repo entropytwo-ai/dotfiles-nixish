@@ -1573,7 +1573,9 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]] && [[ ${#TOOLS[@]} -gt 0 ]]; then
 
     # The fortune binary can exist without any quote database ("No fortunes found"):
     # apt's --no-install-recommends skips 'fortunes-min'/'fortunes'. Verify and fix.
-    if [[ " ${TOOLS[*]} " == *" fortune "* ]] && have fortune && ! fortune >/dev/null 2>&1; then
+    # (judged by output: some fortune builds, e.g. openSUSE Leap's, exit non-zero after printing a quote)
+    fortune_ok() { [[ -n "$(fortune 2>/dev/null)" ]]; }
+    if [[ " ${TOOLS[*]} " == *" fortune "* ]] && have fortune && ! fortune_ok; then
         case "$PM" in
             apt)            fdb="fortunes-min fortunes" ;;
             dnf|yum|pacman) fdb="fortune-mod" ;;
@@ -1581,7 +1583,7 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]] && [[ ${#TOOLS[@]} -gt 0 ]]; then
             *)              fdb="" ;;
         esac
         for p in $fdb; do pm_install "$p" || true; done
-        if fortune >/dev/null 2>&1; then ok "fortune quote database installed"
+        if fortune_ok; then ok "fortune quote database installed"
         else warn "fortune has no quote database - install your distro's fortunes package manually."; fi
     fi
 
