@@ -60,7 +60,7 @@ is_gap() { [[ " $GAPS " == *" $1 "* ]]; }
 # drop the install log lines that only report a known gap
 gap_filter() {
     local t re=""
-    for t in $GAPS; do re+="${re:+|}✖ $t \\(missing\\)|Could not install '$t'|· $t "; done
+    for t in $GAPS; do re+="${re:+|}✖ $t \\(missing\\)|Could not install '$t'|· $t |missing: $t \\(re-run"; done
     if [[ -n "$re" ]]; then grep -Ev "$re"; else cat; fi
 }
 
@@ -75,7 +75,8 @@ printf '\n== %s (user %s) ==\n' "$SCENARIO" "$U"
 bad="$(grep '✖' "$LOG" | grep -v 'fine   ⚠ worth a look' | gap_filter)"
 if [[ -n "$bad" ]]; then fail "install log has ✖ lines:"; sed 's/^/      /' <<<"$bad"
 else pass "no ✖ in the install log"; fi
-bad="$(grep '⚠' "$LOG" | grep -v 'fine   ⚠ worth a look' | gap_filter)"
+# (--status's "⚠ Nothing broken - N thing(s) worth a look" only sums up the ⚠ lines above it)
+bad="$(grep '⚠' "$LOG" | grep -v 'fine   ⚠ worth a look' | grep -v '⚠ Nothing broken - ' | gap_filter)"
 if [[ -n "$bad" ]]; then fail "install.sh printed warnings:"; sed 's/^/      /' <<<"$bad"
 else pass "no warnings"; fi
 if [[ "$SCENARIO" == status ]]; then

@@ -1342,7 +1342,10 @@ installed_pkgs() {   # installed_pkgs <section>... : the package names installed
                 x="${x%@testing}"
                 [[ "$x" == /* || "$x" == http* ]] && continue
                 pm_has "$x" || continue
-                case "$PM" in dnf|yum|zypper) x="$(rpm -q --whatprovides "$x" --qf '%{NAME}\n' 2>/dev/null | head -n 1)" ;; esac
+                case "$PM" in   # the real package name when $x is only "provided" (Arch: tldr -> tealdeer)
+                    dnf|yum|zypper) x="$(rpm -q --whatprovides "$x" --qf '%{NAME}\n' 2>/dev/null | head -n 1)" ;;
+                    pacman)         x="$(pacman -Q "$x" 2>/dev/null | awk 'NR==1 {print $1}')" ;;
+                esac
                 [[ -n "$x" ]] && printf '%s\n' "$x"
             done
         done
@@ -1505,7 +1508,7 @@ do_uninstall() {
             restore) mv -f "$a1" "$a2" && ok "$(disp "$a2") restored from $(disp "$a1")" ;;
             repo)    rm -rf "$a1" && ok "$(disp "$a1") deleted" ;;
             srm)     "${SUDO[@]}" rm -f "$a1" && ok "$a1 deleted" ;;
-            pkg)     if pm_remove "$a1"; then ok "package $a1 removed"; else retry+=("$a1"); fi ;;
+            pkg)     if pm_remove "$a1" || ! pm_has "$a1"; then ok "package $a1 removed"; else retry+=("$a1"); fi ;;
             apktest)
                 if grep -qs '@testing' /etc/apk/world; then info "@testing repository kept: installed packages still use it"
                 else "${SUDO[@]}" sed -i '/^@testing /d' /etc/apk/repositories && ok "@testing line removed from /etc/apk/repositories"; fi ;;
@@ -1513,7 +1516,7 @@ do_uninstall() {
     done
     # a package can be needed by another one on the list: second round
     for p in "${retry[@]}"; do
-        if pm_remove "$p"; then ok "package $p removed"
+        if pm_remove "$p" || ! pm_has "$p"; then ok "package $p removed"
         else warn "package $p kept - other installed packages need it (or $PM refused)"; fi
     done
     if $purge_ok; then
