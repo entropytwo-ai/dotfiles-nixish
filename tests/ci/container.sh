@@ -2,7 +2,8 @@
 # Runs inside a fresh distro container, as root (POSIX sh: Alpine has no bash yet).
 #   sh /repo/tests/ci/container.sh <scenario>
 # Scenarios:
-#   full      install everything (+ --zsh), check it, run again (must change nothing)
+#   full      install everything (+ --zsh --starship), check it, run again (must
+#             change nothing), then --status, --uninstall --purge-packages, --status
 #   tools     only --tools        (1a)
 #   shell     only --shell-config (1b)
 #   xtree     only --xtree        (1c)
@@ -69,7 +70,8 @@ as_user() {  # as_user <command string>  - run like the user would, in a login s
 
 OPTS="--no-menu -y"
 case "$SCENARIO" in
-    full|oneliner) OPTS="$OPTS --zsh" ;;
+    full)   OPTS="$OPTS --zsh --starship" ;;
+    oneliner) OPTS="$OPTS --zsh" ;;
     tools)  OPTS="$OPTS --tools" ;;
     shell)  OPTS="$OPTS --shell-config" ;;
     xtree)  OPTS="$OPTS --xtree" ;;
@@ -109,4 +111,18 @@ if [ "$SCENARIO" = full ] || [ "$SCENARIO" = oneliner ]; then
     cat /tmp/install2.log
     sums /tmp/sums.after
     bash /repo/tests/ci/verify.sh rerun "$TEST_USER" "$HOME_DIR" "$SRC" /tmp/install2.log "$RC2" /tmp/sums.before /tmp/sums.after
+fi
+
+if [ "$SCENARIO" = full ]; then
+    say "install.sh --status after the install: must find nothing broken"
+    set +e; as_user "cd '$CHECKOUT' && bash install.sh --status" >/tmp/status1.log 2>&1; RC3=$?; set -e
+    cat /tmp/status1.log
+    bash /repo/tests/ci/verify.sh status "$TEST_USER" "$HOME_DIR" "$SRC" /tmp/status1.log "$RC3"
+
+    say "install.sh --uninstall -y --purge-packages"
+    set +e; as_user "cd '$CHECKOUT' && bash install.sh --uninstall -y --purge-packages" >/tmp/uninstall.log 2>&1; RC4=$?; set -e
+    cat /tmp/uninstall.log
+    set +e; as_user "cd '$CHECKOUT' && bash install.sh --status" >/tmp/status2.log 2>&1; RC5=$?; set -e
+    cat /tmp/status2.log
+    bash /repo/tests/ci/verify.sh uninstall "$TEST_USER" "$HOME_DIR" "$SRC" /tmp/uninstall.log "$RC4" /tmp/status2.log "$RC5"
 fi

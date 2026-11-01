@@ -6,7 +6,9 @@
 # was never generated, an alias to a missing binary) counts as a failure.
 #
 #   verify.sh <scenario> <user> <home> <src-dir> <install-log> <exit-code> [sums-before sums-after]
-#   scenario: full | oneliner | tools | shell | xtree | rerun
+#   verify.sh status    <user> <home> <src-dir> <status-log> <exit-code>
+#   verify.sh uninstall <user> <home> <src-dir> <uninstall-log> <exit-code> <status-log> <status-exit-code>
+#   scenario: full | oneliner | tools | shell | xtree | rerun | status | uninstall
 set -uo pipefail
 SCENARIO="$1" U="$2" H="$3" SRC="$4" LOG="$5" RC="$6"
 
@@ -69,13 +71,57 @@ printf '\n== %s (user %s) ==\n' "$SCENARIO" "$U"
 # The run itself
 # ---------------------------------------------------------------------------
 [[ "$RC" == 0 ]] && pass "install.sh exited 0" || fail "install.sh exited $RC"
-bad="$(grep '✖' "$LOG" | gap_filter)"
+# --status prints a legend line with all symbols; it is not a result
+bad="$(grep '✖' "$LOG" | grep -v 'fine   ⚠ worth a look' | gap_filter)"
 if [[ -n "$bad" ]]; then fail "install log has ✖ lines:"; sed 's/^/      /' <<<"$bad"
 else pass "no ✖ in the install log"; fi
-bad="$(grep '⚠' "$LOG" | gap_filter)"
+bad="$(grep '⚠' "$LOG" | grep -v 'fine   ⚠ worth a look' | gap_filter)"
 if [[ -n "$bad" ]]; then fail "install.sh printed warnings:"; sed 's/^/      /' <<<"$bad"
 else pass "no warnings"; fi
+if [[ "$SCENARIO" == status ]]; then
+    check "--status reached its verdict" grep -qE 'Everything looks fine|Nothing broken' "$LOG"
+    check "--status sees the bashrc block" grep -q '\.bashrc: block present and up to date' "$LOG"
+    check "--status sees starship turned on" grep -q 'Turned on in ~/.bashrc' "$LOG"
+    [[ $FAILS -eq 0 ]] && { printf '\n\033[32mAll checks passed\033[0m\n'; exit 0; }
+    printf '\n\033[31m%d check(s) failed\033[0m\n' "$FAILS"; exit 1
+fi
 check "the bash greeting/summary reached the end ('🎉')" grep -q '🎉' "$LOG"
+
+# ---------------------------------------------------------------------------
+# --uninstall --purge-packages (after a full install)
+# ---------------------------------------------------------------------------
+if [[ "$SCENARIO" == uninstall ]]; then
+    ST_LOG="$7" ST_RC="$8"
+    for rc in .bashrc .zshrc; do
+        [[ -f "$H/$rc" ]] || continue
+        if grep -q '^# dotfiles-nixish' "$H/$rc"; then fail "~/$rc still has dotfiles-nixish lines: $(grep -n '^# dotfiles-nixish' "$H/$rc" | head -3 | tr '\n' '|')"
+        else pass "~/$rc: dotfiles-nixish and starship blocks removed"; fi
+        ls "$H/$rc".dotfiles-nixish.bak.* >/dev/null 2>&1 && pass "~/$rc backups kept" || fail "no ~/$rc backup left"
+    done
+    check "~/.bashrc passes bash -n" bash -n "$H/.bashrc"
+    check "~/.bash_profile created by install.sh is gone (or ~/.profile no longer has the added lines)" \
+        bash -c "! grep -qs 'dotfiles-nixish' '$H/.bash_profile' '$H/.profile' '$H/.bash_login'"
+    check "xtree removed (/usr/local/bin/xtree, ~/xtree)" bash -c "[[ ! -e /usr/local/bin/xtree && ! -L '$H/xtree' && ! -e '$H/.local/bin/xtree' ]]"
+    check "eza theme removed" test ! -e "$H/.config/eza/theme.yml"
+    check "/usr/local/bin/bat link removed" test ! -L /usr/local/bin/bat
+    greet="$(ush 'true')"
+    if grep -Eqi 'command not found|syntax error|No such file' <<<"$greet"; then fail "interactive shell prints errors after the uninstall: $(head -3 <<<"$greet" | tr '\n' '|')"
+    else pass "interactive shell starts without errors"; fi
+    expect "the dotfiles aliases are gone (cowsays)" "type cowsays 2>&1 || true" 'not found'
+    if is_nix; then
+        note "Nix: packages are not removed automatically (by design)"
+    else
+        for t in duf btop glances starship; do
+            is_gap "$t" && continue
+            expect "$t removed (--purge-packages)" "command -v $t || echo ABSENT" '^ABSENT$'
+        done
+        for t in curl git zsh; do expect "$t kept (prerequisite / login shell)" "command -v $t || echo ABSENT" "/$t\$"; done
+    fi
+    [[ "$ST_RC" == 0 ]] && pass "--status afterwards: nothing broken (exit 0)" || { fail "--status afterwards exited $ST_RC"; grep '✖' "$ST_LOG" | sed 's/^/      /'; }
+    check "--status afterwards: no dotfiles-nixish block" grep -q '\.bashrc: no dotfiles-nixish block' "$ST_LOG"
+    [[ $FAILS -eq 0 ]] && { printf '\n\033[32mAll checks passed\033[0m\n'; exit 0; }
+    printf '\n\033[31m%d check(s) failed\033[0m\n' "$FAILS"; exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Second run (idempotency)
@@ -204,6 +250,17 @@ if $WANT_SHELL; then
             if grep -Eqi 'command not found|No fortunes|parse error|no such file' <<<"$zgreet"; then fail "zsh greeting prints errors: $(grep -Ei 'command not found|No fortunes|parse error|no such file' <<<"$zgreet" | head -3)"
             else pass "zsh starts without errors"; fi
         else fail "--zsh given but zsh is not installed"; fi
+    fi
+    # starship (menu 8, only in the full scenario)
+    if [[ "$SCENARIO" == full ]]; then
+        echo "-- starship (8)"
+        expect "starship runs (starship --version)" "starship --version" '^starship [0-9]'
+        [[ "$(grep -cxF '# dotfiles-nixish starship BEGIN' "$H/.bashrc")" == 1 ]] && pass "~/.bashrc has one starship block" || fail "~/.bashrc starship block missing or repeated"
+        out="$(in_login "TERM=xterm-256color bash -ic 'echo __CI_OUT__; declare -F starship_precmd'" | sed -n '/^__CI_OUT__$/,$p')"
+        [[ "$out" == *starship_precmd* ]] && pass "bash: the starship prompt is active" || fail "bash: starship prompt not active: $(tail -2 <<<"$out" | tr '\n' '|')"
+        out="$(in_login "TERM=xterm-256color zsh -ic 'echo __CI_OUT__; print -r -- \$PROMPT'" | sed -n '/^__CI_OUT__$/,$p')"
+        [[ "$out" == *starship* ]] && pass "zsh: the starship prompt is active" || fail "zsh: starship prompt not active: $(tail -2 <<<"$out" | tr '\n' '|')"
+        expect "TERM=dumb shells keep the plain prompt (no starship noise)" "declare -F starship_precmd || echo PLAIN" '^PLAIN$'
     fi
 else
     if has_block "$H/.bashrc"; then fail "~/.bashrc was changed although the shell config was not chosen"

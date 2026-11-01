@@ -32,6 +32,9 @@
   - [Declarative option (configuration.nix)](#declarative-option-configurationnix)
 - [🔄 Updating](#-updating)
 - [✂️ Only the files your OS needs](#️-only-the-files-your-os-needs)
+- [⭐ Starship prompt](#-starship-prompt)
+- [🩺 Status check (--status)](#-status-check---status)
+- [🧹 Uninstall (--uninstall)](#-uninstall---uninstall)
 - [🧩 Manual / partial use](#-manual--partial-use)
 - [🧪 Tests](#-tests)
 - [🗂 Layout](#-layout)
@@ -58,6 +61,7 @@ to toggle (e.g. `1` for all the dotfiles, `1c` for just xtree), Enter to start:
    5) [ ] Change IP / subnet / gw  now: eth0 192.168.1.11/24 (dhcp) ...
    6) [ ] Change DNS servers       now: 192.168.1.1
    7) [ ] Change system locale     now: C.UTF-8  (default: en_US.UTF-8)
+   8) [ ] Starship prompt          fast, informative prompt in bash/zsh  now: not installed
 ```
 
 `1` selects all three dotfiles parts (or clears them if all were on);
@@ -76,6 +80,7 @@ Add options to the end of the one-liner:
 | `--xtree`          | only xtree (menu 1c)                                      |
 | `--no-tools`, `--no-shell-config`, `--no-xtree` | skip that part               |
 | `--zsh`            | also install zsh and configure `~/.zshrc`                 |
+| `--starship`       | install the [starship prompt](#-starship-prompt) (menu 8) |
 | `--no-packages`    | no package installs at all (implies `--no-tools`)         |
 | `--keep-all`       | keep every repo file, not just the ones your OS needs     |
 | `--package-list F` | use this package list (file or URL) instead of the repo's |
@@ -85,6 +90,8 @@ Add options to the end of the one-liner:
 | `--menu`           | always show the menu (`--no-menu`: never)                 |
 | `--dry-run`        | show the system changes without making them               |
 | `-y`               | don't ask "Go ahead?"                                     |
+| `--status`         | [check](#-status-check---status) what is installed and what is broken; changes nothing |
+| `--uninstall`      | [remove](#-uninstall---uninstall) what install.sh added   |
 
 `--tools`, `--shell-config` and `--xtree` can be combined
 (`--tools --xtree`); without any of them all three parts are done. Like the
@@ -506,6 +513,8 @@ The repo includes a NixOS module. Enabling it installs all the tools plus
   programs.dotfiles-nixish.enable = true;
   # also apply the bash/zsh block system-wide:
   # programs.dotfiles-nixish.shellConfig = true;
+  # also turn on the starship prompt (like menu item 8):
+  # programs.dotfiles-nixish.starship = true;
 }
 ```
 
@@ -593,6 +602,98 @@ full repo.
 <sub>[↑ Back to contents](#table-of-contents)</sub>
 
 
+## ⭐ Starship prompt
+
+Menu item **8**, or `--starship`, installs [starship](https://starship.rs) -
+a fast prompt that shows the git branch, the exit code of the last command,
+the language versions of the project you are in, and more.
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/entropytwo-ai/dotfiles-nixish/main/install.sh) --starship
+```
+
+- **Where it comes from:** the distro package where there is one (Alpine,
+  Arch, Debian 13+, Ubuntu 25.04+, openSUSE). Elsewhere (Debian 12,
+  Ubuntu 24.04, Fedora, Rocky) the official GitHub release goes to
+  `/usr/local/bin/starship`, after its sha256 checksum is checked.
+- **It must really work:** the installer runs `starship prompt` once and
+  only turns the prompt on when that succeeds.
+- **Turned on in its own block** (`# dotfiles-nixish starship BEGIN/END`)
+  in `~/.bashrc` - and `~/.zshrc` when zsh is installed - right after the
+  main block. It only starts in an interactive shell, when `starship` is
+  found, and not in a `TERM=dumb` terminal (so scp, rsync and editors'
+  shells stay plain).
+- **Icons:** the default look uses Nerd Font symbols. Without such a font
+  in your terminal, switch to plain symbols:
+  `starship preset plain-text-symbols -o ~/.config/starship.toml`
+- **Your own config** in `~/.config/starship.toml` is never touched.
+- **NixOS module:** `programs.dotfiles-nixish.starship = true;`
+
+It works on its own or with the dotfiles; `--no-starship` is the default.
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
+
+## 🩺 Status check (--status)
+
+```bash
+bash ~/.dotfiles-nixish/install.sh --status      # same as --doctor
+```
+
+A read-only report - it changes nothing and does not ask for sudo:
+
+| Section | What it checks |
+|---------|----------------|
+| System | is a package manager or cloud-init still busy, is the system locale usable |
+| Tools | how many `[tools]` are installed, fortune has its quotes |
+| xtree | `/usr/local/bin/xtree` passes a self-test, the `~/xtree` link |
+| Shell config | the `~/.bashrc` / `~/.zshrc` block is present, up to date with the repo, and the file passes `bash -n` / `zsh -n`; the login file loads `~/.bashrc`; the eza theme |
+| Starship | starship runs and where it is turned on |
+| Repo copy | is your copy at GitHub's latest commit, local changes |
+| System settings | the `/etc` files install.sh created (sudoers, SSH, network, locale) |
+| Backups | the `*.dotfiles-nixish.bak.*` files |
+
+Each line is `✔` fine, `⚠` worth a look, `✖` broken or `·` not
+installed / not configured, with the command that fixes it. The exit code
+is `1` when something is broken, so it can be used in scripts.
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
+
+## 🧹 Uninstall (--uninstall)
+
+```bash
+bash ~/.dotfiles-nixish/install.sh --uninstall --dry-run   # only show the plan
+bash ~/.dotfiles-nixish/install.sh --uninstall             # show the plan, ask, remove
+```
+
+It looks at what is really there and shows a plan first:
+
+- **Removed:** the dotfiles-nixish and starship blocks from `~/.bashrc`
+  and `~/.zshrc` (a backup is made first, and the result must still pass
+  `bash -n` / `zsh -n`), the `~/.bash_profile` install.sh created (only if
+  you didn't change it) or the two lines it added to your login file, the
+  eza theme (an older theme from a backup comes back; one you changed
+  stays), xtree with the `~/xtree` link (your old `~/xtree` comes back from
+  its backup), and the `/usr/local/bin/bat` link.
+- **Asked, or `--purge-packages`:** the `[tools]` and starship packages,
+  the GitHub release binaries in `/usr/local/bin` and the eza apt
+  repository. Prerequisites (curl, git ...) and zsh are never removed, and
+  neither are Nix packages. Note that this also removes a tool you had
+  before dotfiles-nixish. `--keep-packages` skips the question.
+- **Asked, or `--remove-repo`:** the `~/.dotfiles-nixish` copy
+  (`--keep-repo` skips the question).
+- **Always kept:** the backups (your safety net) and system settings -
+  users, SSH, hostname, network and locale stay as they are, because
+  undoing them could lock you out.
+
+Without a terminal it needs `-y`. Lines the first install removed from your
+`~/.bashrc` as duplicates (for example your own `HISTSIZE`) are in the
+oldest backup; the uninstall tells you its name.
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
+
 ## 🧩 Manual / partial use
 
 ```bash
@@ -616,7 +717,7 @@ Every push and pull request (and a weekly run, because distros change) runs
 
 | Job | What runs |
 |-----|-----------|
-| Full install | `install.sh --zsh` in fresh Debian 12/13 (also arm64, like a Pi), Ubuntu 24.04/26.04, Fedora, Rocky 9, Arch, openSUSE Tumbleweed/Leap and Alpine containers, then once more |
+| Full install | `install.sh --zsh --starship` in fresh Debian 12/13 (also arm64, like a Pi), Ubuntu 24.04/26.04, Fedora, Rocky 9, Arch, openSUSE Tumbleweed/Leap and Alpine containers, then once more |
 | Parts | only `--tools`, only `--shell-config`, only `--xtree` (Debian, Fedora, Alpine) |
 | One-liner | the script piped into bash, so it clones the repo itself |
 | NixOS | the NixOS code path in a `nixos/nix` container, `nix build` with and without flakes, and a real NixOS VM with the module |
@@ -627,6 +728,9 @@ its data* (fortune has quotes, tldr has pages, the locale was generated), xtree
 draws a tree, the aliases and greeting work without errors, eza uses the theme,
 the rc block exists once, all files belong to the user, and the second run
 changes nothing. A part you did not choose must not have been done.
+After that the full job runs `--status` (must find nothing broken), then
+`--uninstall -y --purge-packages`, and checks that the blocks, links, theme
+and tools are gone while backups, curl, git and zsh stay.
 
 A tool that a distro's own repositories simply do not have (for example
 glances on openSUSE Leap) is listed in

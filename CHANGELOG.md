@@ -3,6 +3,35 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-11-01: Status check, uninstall and the starship prompt
+
+- **`--status` / `--doctor`:** a read-only report of the system (busy
+  package manager or cloud-init, locale), tools, xtree, the rc blocks (up to
+  date with the repo, pass `bash -n` / `zsh -n`), login file, eza theme,
+  starship, the repo copy against GitHub, system settings and backups. Lines
+  are ✔ / ⚠ / ✖ / · with the fixing command; exit code 1 when something is
+  broken.
+- **`--uninstall`:** shows a plan, asks (or `-y`, or `--dry-run` for only the
+  plan), then removes the rc blocks (backup first, result must pass `-n`),
+  the login-file lines or the unchanged `~/.bash_profile` it created, the eza
+  theme (an older one is restored), xtree and `~/xtree` (an older `~/xtree`
+  is restored) and the bat link. `--purge-packages` also removes the
+  `[tools]` and starship packages, the GitHub release binaries and the eza
+  apt repository (never curl/git/zsh, never Nix packages); `--remove-repo`
+  deletes `~/.dotfiles-nixish`. Backups and system settings are kept.
+- **Menu item 8 / `--starship`:** installs starship (distro package, or the
+  sha256-checked GitHub release in `/usr/local/bin`), checks that
+  `starship prompt` really runs, and turns it on in its own guarded block in
+  `~/.bashrc` / `~/.zshrc` (interactive shells only, not with `TERM=dumb`).
+  New `[starship]` section in `packages/package_list.txt`; NixOS module
+  option `programs.dotfiles-nixish.starship`.
+- The sudo request is now one function (`get_sudo`) shared by install and
+  uninstall.
+- **Tests:** the full CI job now installs with `--starship`, checks the
+  prompt in bash and zsh, then runs `--status`, `--uninstall -y
+  --purge-packages` and `--status` again and checks that everything added is
+  gone while backups and prerequisites stay.
+
 ## 2026-10-31: Wait for a busy package manager instead of looking frozen
 
 - On a new Fedora Cloud VM (from proxmox-linux-quick-deploy), the run

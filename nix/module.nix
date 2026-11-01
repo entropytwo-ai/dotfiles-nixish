@@ -27,6 +27,15 @@ in
         ~/.bashrc / ~/.zshrc (otherwise the greeting shows twice).
       '';
     };
+
+    starship = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Also turn on the starship prompt (programs.starship) for bash and zsh -
+        the same as menu item 8 / --starship of install.sh.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -41,5 +50,7 @@ in
     # only takes effect when programs.zsh.enable = true
     programs.zsh.interactiveShellInit = lib.mkIf cfg.shellConfig
       (builtins.readFile ../config/zshrc_append.sh);
+
+    programs.starship.enable = lib.mkIf cfg.starship true;
   };
 }

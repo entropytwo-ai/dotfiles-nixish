@@ -30,6 +30,8 @@ fi
 PKG_LIST_REL=packages/package_list.txt   # the one package list for every OS
 MARK_BEGIN="# dotfiles-nixish BEGIN"
 MARK_END="# dotfiles-nixish END"
+STAR_BEGIN="# dotfiles-nixish starship BEGIN"   # separate block: menu item 8 / --starship
+STAR_END="# dotfiles-nixish starship END"
 XTREE_BIN="/usr/local/bin/xtree"
 TS="$(date +%Y%m%d-%H%M%S)"
 
@@ -55,6 +57,11 @@ DO_LOCALE=false; NEW_LOCALE=""; LOCALE_AUTO=false; OPT_KEEP_LOCALE=false
 OPT_FIND_LOCALE=false; FIND_LOCALE_Q=""
 OPT_LIST_PKGS=false
 SYS_FLAGS=false
+DO_STARSHIP=false      # 8: starship prompt (package + init block in ~/.bashrc / ~/.zshrc)
+OPT_STATUS=false       # --status: read-only report, then exit
+OPT_UNINSTALL=false    # --uninstall: undo what install.sh did to this user / system
+OPT_PURGE=ask          # --purge-packages / --keep-packages (with --uninstall)
+OPT_RM_REPO=ask        # --remove-repo / --keep-repo (with --uninstall)
 
 usage() {
     cat <<'EOF'
@@ -78,6 +85,11 @@ Dotfiles (menu item 1 = all three parts, 1a/1b/1c = one part):
   --keep-all            keep every repo file (default: only what this OS needs)
   --package-list F      use this package list (file or URL) instead of
                         packages/package_list.txt from the repo
+
+Prompt (menu item 8):
+  --starship            install the starship prompt and turn it on in
+                        ~/.bashrc (and ~/.zshrc when zsh is installed)
+  --no-starship         don't (default)
 
 System settings:
   --add-user NAME       create a user with sudo rights (asks for the password)
@@ -103,6 +115,21 @@ Locales:
 Packages:
   --list-packages       show which packages this script installs here, what
                         each one does and which are already installed; exit
+
+Check / undo:
+  --status, --doctor    show what is installed, configured and broken
+                        (also: is a package manager / cloud-init busy?);
+                        changes nothing; exit code 1 when something is broken
+  --uninstall           remove what install.sh added: the ~/.bashrc/~/.zshrc
+                        blocks, login-file lines, eza theme, xtree, bat link;
+                        shows the plan and asks first (-y: don't ask,
+                        --dry-run: only show the plan). Backups and system
+                        settings (users, SSH, network, locale) are kept.
+  --purge-packages      with --uninstall: also remove the [tools] and starship
+                        packages, the GitHub fallback binaries and extra repos
+                        (never the prerequisites like curl/git, never zsh)
+  --keep-packages       with --uninstall: don't ask about packages
+  --remove-repo | --keep-repo   with --uninstall: delete / keep ~/.dotfiles-nixish
 
 Other:
   --menu | --no-menu    always / never show the menu
@@ -144,6 +171,14 @@ while [[ $# -gt 0 ]]; do
         --find-locale) OPT_FIND_LOCALE=true
                        if [[ $# -ge 2 && "$2" != -* ]]; then FIND_LOCALE_Q="$2"; shift; fi ;;
         --list-packages|--packages) OPT_LIST_PKGS=true ;;
+        --starship) DO_STARSHIP=true ;;
+        --no-starship) DO_STARSHIP=false ;;
+        --status|--doctor) OPT_STATUS=true ;;
+        --uninstall) OPT_UNINSTALL=true ;;
+        --purge-packages) OPT_PURGE=yes ;;
+        --keep-packages) OPT_PURGE=no ;;
+        --remove-repo) OPT_RM_REPO=yes ;;
+        --keep-repo) OPT_RM_REPO=no ;;
         --menu) OPT_MENU=yes ;;
         --no-menu) OPT_MENU=no ;;
         -y|--yes) OPT_YES=true ;;
@@ -975,11 +1010,12 @@ show_packages() {
     printf '\n%s  Packages this script installs on %s (package manager: %s)%s\n' "$C_B" "$OS_NAME" "$PM" "$C_0"
     printf '   List: %s\n' "$PKG_LIST_SRC"
     printf '   %s✔%s = already installed, %s·%s = would be installed\n' "$C_G" "$C_0" "$C_Y" "$C_0"
-    for sec in prerequisites tools zsh ssh sudo locale; do
+    for sec in prerequisites tools zsh ssh sudo locale starship; do
         [[ -n "${PKG_SEC[$sec]:-}" ]] || continue
         case "$sec" in
             prerequisites) printf '\n%s  Always (needed by the script itself)%s\n' "$C_B" "$C_0" ;;
             tools)         printf '\n%s  Dotfiles tools (menu item 1a)%s\n' "$C_B" "$C_0" ;;
+            starship)      printf '\n%s  Starship prompt (menu item 8 / --starship)%s\n' "$C_B" "$C_0" ;;
             *) $extra || printf '\n%s  Only when needed for a chosen option%s\n' "$C_B" "$C_0"; extra=true ;;
         esac
         for t in ${PKG_SEC[$sec]}; do
@@ -1026,6 +1062,480 @@ ask_password() {  # ask_password <user> -> NEW_USER_PW ; hidden input, typed twi
 
 if $OPT_LIST_PKGS; then show_packages; exit $?; fi
 
+# =============================================================================
+#  Shared by the install, --status and --uninstall
+# =============================================================================
+get_sudo() {   # get_sudo <why> : SUDO=() as root, else sudo (kept alive)
+    if [[ $EUID -eq 0 ]]; then SUDO=(); return 0; fi
+    have sudo || die "sudo is required (or run this script as root)."
+    # Pass our PATH through: sudo's secure_path (and sudo-rs defaults) point at
+    # /usr/bin:/bin, which on NixOS holds no coreutils - `sudo install` would fail.
+    # (sbin dirs appended: they are in secure_path but often not in a user's PATH)
+    SUDO=(sudo "$(command -v env)" "PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin")
+    step "Requesting sudo ($1)"
+    # 'sudo true', not 'sudo -v': -v asks for a password unless EVERY sudoers
+    # rule for the user is NOPASSWD (openSUSE's default "ALL ALL=(ALL) ALL" counts)
+    sudo true || die "Could not obtain sudo privileges."
+    # keep sudo alive while we work
+    ( while kill -0 $$ 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done ) &
+    SUDO_KEEPALIVE=$!
+}
+SUDO=()
+
+# --- starship init block (separate from the main block, so it works without
+#     the shell config and --uninstall / --status can see it on its own)
+STAR_OK=false; STAR_VER=""; STAR_ERR=""
+starship_works() {   # really run it: version, a prompt, and the bash init script
+    local v
+    have starship || { STAR_ERR="not installed"; return 1; }
+    v="$(starship --version 2>&1 | head -n 1)"
+    [[ "$v" == starship* ]] || { STAR_ERR="starship --version: $(short "$v" 60)"; return 1; }
+    [[ -n "$(as_target env TERM=xterm-256color starship prompt --path "$TARGET_HOME" 2>/dev/null)" ]] \
+        || { STAR_ERR="'starship prompt' printed nothing"; return 1; }
+    as_target env TERM=xterm-256color starship init bash >/dev/null 2>&1 || { STAR_ERR="'starship init bash' failed"; return 1; }
+    STAR_VER="${v#starship }"
+}
+star_block() {   # star_block bash|zsh
+    local cond='[[ $- == *i* ]]'; [[ "$1" == zsh ]] && cond='[[ -o interactive ]]'
+    printf '%s\n' "$STAR_BEGIN" \
+        "# Starship prompt - dotfiles-nixish menu item 8 / --starship (remove: install.sh --uninstall)" \
+        "# Only when starship is installed and the terminal can show it, so the shell never breaks." \
+        "if $cond && command -v starship >/dev/null 2>&1 && [ \"\${TERM:-dumb}\" != dumb ]; then" \
+        "    eval \"\$(starship init $1)\"" \
+        "fi" "$STAR_END"
+}
+install_star_block() {   # install_star_block <rcfile> bash|zsh : add, or refresh in place
+    local rc="$1" d tmp nb ne bak
+    d="$(disp "$rc")"
+    [[ -e "$rc" ]] || { touch "$rc" && fix_owner "$rc"; }
+    nb=$(grep -cxF "$STAR_BEGIN" "$rc" || true); ne=$(grep -cxF "$STAR_END" "$rc" || true)
+    if [[ "$nb" != "$ne" || "$nb" -gt 1 ]]; then
+        warn "$d has unbalanced or repeated starship markers - fix it manually; not modified."; return 1
+    fi
+    tmp="$WORKDIR/star.$$"; star_block "$2" > "$tmp.blk"
+    if [[ "$nb" -eq 1 ]]; then
+        awk -v sb="$STAR_BEGIN" -v se="$STAR_END" -v f="$tmp.blk" '
+            $0==sb {while ((getline l < f) > 0) print l; s=1; next}  $0==se {s=0; next}  !s {print}' "$rc" > "$tmp"
+    else
+        sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$rc" > "$tmp"
+        { [[ -s "$tmp" ]] && echo; cat "$tmp.blk"; } >> "$tmp"
+    fi
+    if same_file "$tmp" "$rc"; then ok "$d: starship already turned on - no changes written"; return 0; fi
+    if [[ -s "$rc" ]]; then
+        bak="$rc.dotfiles-nixish.bak.$TS"
+        [[ -e "$bak" ]] || { cp -p "$rc" "$bak" && fix_owner "$bak" && sub "Backup of the original saved: $(disp "$bak")"; }
+    fi
+    cat "$tmp" > "$rc"
+    ok "$d: starship prompt turned on"
+}
+
+# --- what install.sh leaves behind, for --status and --uninstall
+LOGIN_CREATED_HDR='# Created by dotfiles-nixish: login shells (console/SSH) should load ~/.bashrc'
+LOGIN_APPEND_HDR='# dotfiles-nixish: load ~/.bashrc in bash login shells'
+REF_TMP=""
+ref_file() {   # ref_file <repo path> : prints a readable copy of that repo file (checkout, clone or download)
+    local d f
+    for d in "$SELF_DIR" "${DOTFILES_DIR:-$TARGET_HOME/.dotfiles-nixish}"; do
+        [[ -n "$d" && -r "$d/$1" && -r "$d/config/bashrc_append.sh" ]] && { printf '%s' "$d/$1"; return 0; }
+    done
+    [[ -n "$REF_TMP" ]] || return 1
+    f="$REF_TMP/ref_${1//\//_}"
+    if [[ ! -s "$f" ]]; then
+        { have curl || have wget; } && fetch "$RAW_BASE/$1" "$f" 2>/dev/null || { rm -f "$f"; return 1; }
+    fi
+    printf '%s' "$f"
+}
+eza_theme_path() {
+    local c="$TARGET_HOME/.config"
+    [[ "$TARGET_USER" == "$(id -un)" && -n "${XDG_CONFIG_HOME:-}" ]] && c="$XDG_CONFIG_HOME"
+    printf '%s/eza/theme.yml' "$c"
+}
+is_our_xtree() { [[ -f "$1" ]] && { same_file "$1" "$(ref_file scripts/xtree.sh)" || grep -qs 'shadows .tput' "$1"; }; }
+nmark() { local n=0; [[ -f "$2" ]] && n="$(grep -cxF "$1" "$2")"; echo "${n:-0}"; }   # nmark <marker line> <file>
+newest() { local f last=""; for f in "$@"; do [[ -e "$f" ]] && last="$f"; done; printf '%s' "$last"; }  # globs sort by timestamp
+login_created_unchanged() {   # ~/.bash_profile exactly as install.sh created it?
+    # shellcheck disable=SC2016
+    [[ -f "$1" && "$(<"$1")" == "$LOGIN_CREATED_HDR"$'\n''[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' ]]
+}
+sys_files() {   # the /etc files scripts/system-setup.sh writes (not its backups)
+    local f
+    for f in /etc/sudoers.d/*dotfiles-nixish* /etc/ssh/sshd_config.d/*dotfiles-nixish* \
+             /etc/cloud/cloud.cfg.d/*dotfiles-nixish* /etc/netplan/*dotfiles-nixish* \
+             /etc/systemd/network/*dotfiles-nixish* /etc/systemd/resolved.conf.d/*dotfiles-nixish* \
+             /etc/profile.d/*dotfiles-nixish* /etc/nixos/*dotfiles-nixish*; do
+        [[ -e "$f" && "$f" != *.bak.* ]] && printf '%s\n' "$f"
+    done
+    # /etc/sudoers.d is root-only on most systems: look with passwordless sudo if possible
+    if [[ -d /etc/sudoers.d && ! -r /etc/sudoers.d && $EUID -ne 0 ]]; then
+        sudo -n sh -c 'for f in /etc/sudoers.d/*dotfiles-nixish*; do [ -e "$f" ] && echo "$f"; done' 2>/dev/null
+    fi
+}
+fortune_has_data() { [[ -n "$(fortune 2>/dev/null)" ]] || [[ "$(fortune -f 2>&1 | grep -c '%')" -gt 1 ]]; }
+
+# =============================================================================
+#  --status: what is installed, configured and broken. Changes nothing.
+# =============================================================================
+# shellcheck disable=SC2088  # "~/..." in messages is text
+do_status() {
+    local bad=0 look=0 t f rc sh n cnt v out ref busy cs d lr nb ne br lh rh st i
+    local -a miss=() inrc=() baks=() sf=()
+    s_ok()   { printf '   %s✔%s %s\n' "$C_G" "$C_0" "$*"; }
+    s_no()   { printf '   %s·%s %s\n' "$C_D" "$C_0" "$*"; }
+    s_look() { printf '   %s⚠%s %s\n' "$C_Y" "$C_0" "$*"; look=$((look + 1)); }
+    s_bad()  { printf '   %s✖%s %s\n' "$C_R" "$C_0" "$*"; bad=$((bad + 1)); }
+    REF_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-nixish-status.XXXXXX")"
+    trap 'rm -rf "$REF_TMP"' EXIT
+    printf '   %s✔ fine   ⚠ worth a look   ✖ broken   · not installed / not configured%s\n' "$C_D" "$C_0"
+
+    step "System"
+    if busy="$(pm_busy)"; then s_look "Package manager busy: $busy - an install would wait for it"
+    else s_ok "Package manager ($PM) is free"; fi
+    if have cloud-init; then
+        cs="$(cloud-init status 2>/dev/null | sed -n 's/^status:[[:space:]]*//p' | head -n 1)"
+        case "$cs" in
+            "") ;;
+            done|disabled) s_ok "cloud-init: $cs" ;;
+            running) [[ "${busy:-}" == cloud-init* ]] || s_look "cloud-init is still running (first boot)" ;;
+            *) s_look "cloud-init: $cs (details: sudo cloud-init status --long)" ;;
+        esac
+    fi
+    v="$(cur_sys_locale)"
+    if loc_is_plain "$v"; then s_no "System locale: ${v:-not set} (no language - the shell config uses $DEFAULT_LOCALE where it exists)"
+    elif [[ -z "$(LC_ALL="$v" bash -c : 2>&1)" ]]; then s_ok "System locale: $v"
+    else s_bad "System locale $v is set but not available - programs warn \"cannot change locale\" (re-run with --locale $v)"; fi
+
+    step "Tools (menu 1a)"
+    if get_package_list "$REF_TMP/package_list.txt" && load_package_list "$REF_TMP/package_list.txt"; then
+        n=0; cnt=0
+        for t in $(pkg_section tools); do
+            n=$((n + 1)); if tool_present "$t"; then cnt=$((cnt + 1)); else miss+=("$t"); fi
+        done
+        if (( n == 0 )); then s_no "The package list has no [tools]"
+        elif (( cnt == n )); then s_ok "All $n tools installed: $(pkg_section tools | xargs)"
+        elif (( cnt == 0 )); then s_no "None of the $n tools installed (menu 1a / --tools)"
+        else s_look "$cnt of $n tools installed - missing: ${miss[*]} (re-run with --tools)"; fi
+        if have fortune && ! fortune_has_data; then s_bad "fortune has no quote database (re-run with --tools)"; fi
+        if have batcat && ! have bat; then s_look "bat is only there as 'batcat' (the shell config aliases it; re-run with --tools for the link)"; fi
+    else
+        s_look "Could not read the package list ($PKG_LIST_REL) - tools not checked"
+    fi
+
+    step "xtree (menu 1c)"
+    f=""
+    for t in /usr/local/bin/xtree "$TARGET_HOME/.local/bin/xtree"; do [[ -e "$t" ]] && { f="$t"; break; }; done
+    [[ -z "$f" ]] && have xtree && f="$(command -v xtree)"   # NixOS module
+    if [[ -z "$f" ]]; then s_no "xtree not installed"
+    else
+        mkdir -p "$REF_TMP/xt"; out="$(TERM=dumb "$f" -L 1 "$REF_TMP/xt" 2>&1)"
+        if [[ "$out" == *Name* ]]; then s_ok "$(disp "$f") works (self-test)"
+        else s_bad "$(disp "$f") fails its self-test: $(short "$(head -n 1 <<<"$out")" 60)"; fi
+        if [[ "$f" != /nix/* ]] && ref="$(ref_file scripts/xtree.sh)" && ! same_file "$f" "$ref"; then
+            s_look "$(disp "$f") differs from the repo copy (older version? re-run with --xtree)"
+        fi
+    fi
+    t="$TARGET_HOME/xtree"
+    if [[ -L "$t" ]]; then
+        if [[ -x "$t" ]]; then s_ok "~/xtree -> $(readlink "$t")"; else s_bad "~/xtree points to a missing file ($(readlink "$t")) - re-run with --xtree"; fi
+    elif [[ -e "$t" ]]; then s_no "~/xtree is a regular file (not managed by install.sh)"
+    elif [[ -n "$f" && "$f" != /nix/* ]]; then s_look "~/xtree link missing (re-run with --xtree)"
+    fi
+
+    step "Shell config (menu 1b)"
+    for rc in .bashrc .zshrc; do
+        f="$TARGET_HOME/$rc"; sh=bash; [[ "$rc" == .zshrc ]] && sh=zsh
+        if [[ ! -f "$f" ]]; then s_no "~/$rc does not exist"; continue; fi
+        nb="$(nmark "$MARK_BEGIN" "$f")"; ne="$(nmark "$MARK_END" "$f")"
+        if [[ "$nb" == 0 && "$ne" == 0 ]]; then s_no "~/$rc: no dotfiles-nixish block"
+        elif [[ "$nb" != 1 || "$ne" != 1 ]]; then s_bad "~/$rc: $nb BEGIN and $ne END markers (want exactly one block) - fix it by hand"
+        else
+            awk -v b="$MARK_BEGIN" -v e="$MARK_END" '$0==b {s=1} s {print} $0==e {s=0}' "$f" > "$REF_TMP/blk"
+            if ref="$(ref_file "config/${sh}rc_append.sh")"; then
+                if same_file "$REF_TMP/blk" "$ref"; then s_ok "~/$rc: block present and up to date"
+                else s_look "~/$rc: block present but differs from the repo copy (re-run to refresh it)"; fi
+            else s_ok "~/$rc: block present"; fi
+        fi
+        if have "$sh" && ! "$sh" -n "$f" 2>/dev/null; then s_bad "~/$rc has a syntax error ($sh -n $(disp "$f"))"; fi
+    done
+    lr=""
+    for t in .bash_profile .bash_login .profile; do [[ -f "$TARGET_HOME/$t" ]] && { lr="$t"; break; }; done
+    if [[ "$(nmark "$MARK_BEGIN" "$TARGET_HOME/.bashrc")" != 0 ]]; then
+        if [[ -z "$lr" ]]; then s_bad "No ~/.bash_profile or ~/.profile: console/SSH logins skip ~/.bashrc (re-run with --shell-config)"
+        elif grep -qE '(\.|source)[[:space:]]+.*\.bashrc' "$TARGET_HOME/$lr"; then s_ok "~/$lr loads ~/.bashrc (console/SSH logins)"
+        else s_bad "~/$lr does not load ~/.bashrc - console/SSH logins skip the block (re-run with --shell-config)"; fi
+    fi
+    f="$(eza_theme_path)"
+    if [[ -f "$f" ]]; then
+        if ref="$(ref_file config/eza-theme.yml)"; then
+            if same_file "$f" "$ref"; then s_ok "$(disp "$f") up to date"
+            else s_look "$(disp "$f") differs from the repo copy (changed by you, or older)"; fi
+        else s_ok "$(disp "$f") present"; fi
+    elif have eza; then s_no "No eza theme ($(disp "$f"))"
+    fi
+
+    step "Starship prompt (menu 8)"
+    for rc in .bashrc .zshrc; do [[ "$(nmark "$STAR_BEGIN" "$TARGET_HOME/$rc")" != 0 ]] && inrc+=("~/$rc"); done
+    if have starship; then
+        if starship_works; then s_ok "starship $STAR_VER runs ($(command -v starship))"
+        else s_bad "starship is installed but $STAR_ERR"; fi
+        if (( ${#inrc[@]} )); then s_ok "Turned on in ${inrc[*]}"
+        else s_no "Installed but not turned on (re-run with --starship)"; fi
+        [[ -e "$TARGET_HOME/.config/starship.toml" ]] && s_ok "Own config: ~/.config/starship.toml"
+    elif (( ${#inrc[@]} )); then
+        s_look "Init block in ${inrc[*]} but starship is not installed - the prompt stays plain (re-run with --starship, or --uninstall)"
+    else
+        s_no "starship not installed"
+    fi
+
+    step "Repo copy"
+    d="$SELF_DIR"; [[ -n "$d" && -r "$d/config/bashrc_append.sh" ]] || d="${DOTFILES_DIR:-$TARGET_HOME/.dotfiles-nixish}"
+    if [[ -d "$d/.git" ]] && have git; then
+        br="$(as_target git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+        lh="$(as_target git -C "$d" rev-parse HEAD 2>/dev/null)"
+        rh=""; have timeout && rh="$(as_target timeout 15 git -C "$d" ls-remote origin "refs/heads/$br" 2>/dev/null | cut -f1)"
+        if [[ -z "$rh" ]]; then s_no "$(disp "$d") ($br) - could not ask GitHub whether it is current"
+        elif [[ "$rh" == "$lh" ]]; then s_ok "$(disp "$d") ($br) is up to date with GitHub"
+        else s_look "$(disp "$d") ($br) is not at GitHub's latest commit - update: git -C $(disp "$d") pull"; fi
+        st="$(as_target git -C "$d" status --porcelain --untracked-files=no 2>/dev/null | grep -c . || true)"
+        [[ "$st" != 0 ]] && s_look "$(disp "$d") has $st locally changed file(s)"
+    elif [[ -r "$d/install.sh" ]]; then s_ok "$(disp "$d") (plain copy, no git)"
+    else s_no "No copy in $(disp "$d")"; fi
+
+    step "System settings made by install.sh (kept by --uninstall)"
+    mapfile -t sf < <(sys_files | sort -u)
+    if (( ${#sf[@]} )); then for f in "${sf[@]}"; do s_ok "$f"; done
+    else s_no "None found$([[ -d /etc/sudoers.d && ! -r /etc/sudoers.d && $EUID -ne 0 ]] && echo " (/etc/sudoers.d is only readable as root: sudo bash install.sh --status)")"; fi
+
+    step "Backups"
+    for f in "$TARGET_HOME"/.*.dotfiles-nixish.bak.* "$TARGET_HOME"/xtree.bak.* "$(eza_theme_path)".dotfiles-nixish.bak.*; do
+        [[ -e "$f" ]] && baks+=("$(disp "$f")")
+    done
+    if (( ${#baks[@]} )); then
+        i=$(( ${#baks[@]} > 3 ? ${#baks[@]} - 3 : 0 ))
+        s_no "${#baks[@]} backup file(s)$( (( i )) && echo ", last 3"): ${baks[*]:i}"
+    else s_no "No backup files"; fi
+
+    printf '\n'
+    if (( bad > 0 )); then printf '%s%s✖ %d problem(s) found%s%s\n' "$C_B" "$C_R" "$bad" "$( (( look )) && echo ", $look thing(s) worth a look")" "$C_0"
+    elif (( look > 0 )); then printf '%s%s⚠ Nothing broken - %d thing(s) worth a look%s\n' "$C_B" "$C_Y" "$look" "$C_0"
+    else printf '%s%s✔ Everything looks fine%s\n' "$C_B" "$C_G" "$C_0"; fi
+    (( bad == 0 ))
+}
+
+# =============================================================================
+#  --uninstall: undo what install.sh did for this user (+ /usr/local/bin)
+# =============================================================================
+pm_remove() {   # one package; fails (changes nothing) when other packages still need it
+    wait_pm_idle
+    case "$PM" in
+        apt)            "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive dpkg -r "$1" ;;
+        dnf|yum|zypper) "${SUDO[@]}" rpm -e "$1" ;;
+        pacman)         "${SUDO[@]}" pacman -R --noconfirm "$1" ;;
+        apk)            "${SUDO[@]}" apk del -q "$1" ;;
+        *)              return 1 ;;
+    esac >/dev/null 2>&1
+}
+installed_pkgs() {   # installed_pkgs <section>... : the package names installed for those entries
+    local t c x
+    for t in $(pkg_section "$@"); do
+        for c in $(candidates "$t"); do
+            for x in ${c//+/ }; do
+                x="${x%@testing}"
+                [[ "$x" == /* || "$x" == http* ]] && continue
+                pm_has "$x" || continue
+                case "$PM" in dnf|yum|zypper) x="$(rpm -q --whatprovides "$x" --qf '%{NAME}\n' 2>/dev/null | head -n 1)" ;; esac
+                [[ -n "$x" ]] && printf '%s\n' "$x"
+            done
+        done
+    done | awk '!seen[$0]++'
+}
+strip_rc_blocks() {   # strip_rc_blocks <in> <out> : both dotfiles-nixish blocks out, trailing blank lines too
+    awk -v b="$MARK_BEGIN" -v e="$MARK_END" -v sb="$STAR_BEGIN" -v se="$STAR_END" '
+        $0==b || $0==sb {skip=1; next}  $0==e || $0==se {skip=0; next}  !skip {print}' "$1" \
+        | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > "$2"
+}
+
+# shellcheck disable=SC2088  # "~/..." in messages is text
+do_uninstall() {
+    local f rc sh d p t bak b x w kind a1 a2 desc purge_ok=false n tty=false
+    local -a ACTS=() SACTS=() KEEP=() PKGS=() FBIN=() PREQ=() left=()
+    REF_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-nixish-uninstall.XXXXXX")"
+    trap 'rm -rf "$REF_TMP"; kill "${SUDO_KEEPALIVE:-}" 2>/dev/null' EXIT
+    [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null && tty=true
+    step "Uninstall: looking for what dotfiles-nixish added for $TARGET_USER$($OPT_DRY && echo " (dry run - nothing will be changed)")"
+
+    # --- the user's files. Entries: kind|arg1|arg2|description
+    for rc in .bashrc .zshrc; do
+        f="$TARGET_HOME/$rc"
+        [[ -f "$f" ]] || continue
+        a1="$(nmark "$MARK_BEGIN" "$f")$(nmark "$MARK_END" "$f")"; a2="$(nmark "$STAR_BEGIN" "$f")$(nmark "$STAR_END" "$f")"
+        [[ "$a1$a2" == 0000 ]] && continue
+        if [[ "${a1:0:1}" != "${a1:1}" || "${a2:0:1}" != "${a2:1}" ]]; then
+            KEEP+=("~/$rc: unbalanced dotfiles-nixish markers - remove the block by hand"); continue
+        fi
+        if [[ "$a1" == 00 ]]; then w="starship block"
+        elif [[ "$a2" == 00 ]]; then w="dotfiles-nixish block"
+        else w="dotfiles-nixish and starship blocks"; fi
+        ACTS+=("rc|$f|$w|remove the $w from ~/$rc (a backup is kept)")
+    done
+    f="$TARGET_HOME/.bash_profile"
+    if login_created_unchanged "$f"; then ACTS+=("rm|$f||delete ~/.bash_profile (created by install.sh, unchanged)")
+    elif [[ -f "$f" ]] && [[ "$(head -n 1 "$f")" == "$LOGIN_CREATED_HDR" ]]; then KEEP+=("~/.bash_profile: created by install.sh but changed since - kept")
+    fi
+    for t in .bash_profile .bash_login .profile; do
+        f="$TARGET_HOME/$t"
+        grep -qxF "$LOGIN_APPEND_HDR" "$f" 2>/dev/null && ACTS+=("login|$f||remove the 2 lines that install.sh added to ~/$t (load ~/.bashrc)")
+    done
+    f="$(eza_theme_path)"
+    if [[ -f "$f" ]]; then
+        bak="$(newest "$f".dotfiles-nixish.bak.*)"
+        if ! p="$(ref_file config/eza-theme.yml)"; then KEEP+=("$(disp "$f"): could not get the repo copy to compare - kept")
+        elif ! same_file "$f" "$p"; then KEEP+=("$(disp "$f"): differs from the repo copy (changed by you?) - kept")
+        elif [[ -n "$bak" ]]; then ACTS+=("restore|$bak|$f|put your previous eza theme back ($(disp "$bak"))")
+        else ACTS+=("rm|$f||delete $(disp "$f") (the dotfiles-nixish eza theme)"); fi
+    fi
+    f="$TARGET_HOME/xtree"
+    [[ -L "$f" ]] && ACTS+=("rm|$f||delete the ~/xtree link")
+    bak="$(newest "$TARGET_HOME"/xtree.bak.*)"
+    [[ -n "$bak" && ( -L "$f" || ! -e "$f" ) ]] && ACTS+=("restore|$bak|$f|put your previous ~/xtree back ($(disp "$bak"))")
+    f="$TARGET_HOME/.local/bin/xtree"
+    is_our_xtree "$f" && ACTS+=("rm|$f||delete $(disp "$f")")
+
+    # --- system files (sudo)
+    is_our_xtree /usr/local/bin/xtree && SACTS+=("srm|/usr/local/bin/xtree||delete /usr/local/bin/xtree")
+    [[ -L /usr/local/bin/bat && "$(readlink /usr/local/bin/bat)" == *batcat ]] \
+        && SACTS+=("srm|/usr/local/bin/bat||delete the /usr/local/bin/bat -> batcat link")
+
+    # --- packages (only with --purge-packages, or a yes to the question)
+    if get_package_list "$REF_TMP/package_list.txt" && load_package_list "$REF_TMP/package_list.txt"; then
+        if [[ "$PM" == nix ]]; then
+            KEEP+=("Nix packages: not removed automatically - list them with: nix-env -q  (or: nix profile list)")
+        else
+            mapfile -t PREQ < <(installed_pkgs prerequisites zsh ssh sudo locale)
+            while IFS= read -r p; do
+                [[ -n "$p" && " ${PREQ[*]} " != *" $p "* ]] && PKGS+=("$p")
+            done < <(installed_pkgs tools starship)
+        fi
+    fi
+    for x in eza fastfetch tldr starship; do
+        [[ -f "/usr/local/bin/$x" && ! -L "/usr/local/bin/$x" ]] && FBIN+=("/usr/local/bin/$x")
+    done
+    if (( ${#PKGS[@]} + ${#FBIN[@]} )) || [[ -e /etc/apt/sources.list.d/gierens.list ]]; then
+        if [[ "$OPT_PURGE" == ask ]] && $tty && ! $OPT_YES && ! $OPT_DRY; then
+            info "Installed tool packages: ${PKGS[*]:-none}${FBIN[*]:+ - GitHub binaries: ${FBIN[*]}}"
+            info "(this includes any of them you had before dotfiles-nixish; curl, git, zsh ... are never removed)"
+            yesno "Remove these packages too?" n && OPT_PURGE=yes
+        fi
+        if [[ "$OPT_PURGE" == yes ]]; then
+            purge_ok=true
+            for p in "${PKGS[@]}"; do SACTS+=("pkg|$p||remove package $p"); done
+            for x in "${FBIN[@]}"; do SACTS+=("srm|$x||delete $x (GitHub release binary)"); done
+            for x in /etc/apt/sources.list.d/gierens.list /etc/apt/keyrings/gierens.gpg; do
+                [[ -e "$x" ]] && SACTS+=("srm|$x||delete $x (eza apt repository)")
+            done
+            grep -qs '^@testing ' /etc/apk/repositories && SACTS+=("apktest|||remove the @testing line from /etc/apk/repositories (if nothing uses it any more)")
+        else
+            w="${PKGS[*]}"; [[ -n "$w" && -n "${FBIN[*]}" ]] && w+=", "; w+="${FBIN[*]}"
+            KEEP+=("Packages kept: $w (add --purge-packages to remove them)")
+        fi
+    fi
+
+    # --- the repo clone
+    d="${DOTFILES_DIR:-$TARGET_HOME/.dotfiles-nixish}"
+    if [[ -f "$d/install.sh" && -f "$d/config/bashrc_append.sh" ]]; then
+        if [[ "$OPT_RM_REPO" == ask ]] && $tty && ! $OPT_YES && ! $OPT_DRY; then
+            yesno "Also delete the repo copy $(disp "$d")?" n && OPT_RM_REPO=yes
+        fi
+        if [[ "$OPT_RM_REPO" == yes ]]; then ACTS+=("repo|$d||delete the repo copy $(disp "$d")")
+        else KEEP+=("Repo copy $(disp "$d") kept (add --remove-repo to delete it)"); fi
+    fi
+
+    # --- kept on purpose
+    while IFS= read -r f; do [[ -n "$f" ]] && KEEP+=("System setting $f (users, SSH, network and locale stay as they are; delete it by hand if you want)"); done < <(sys_files | sort -u)
+    for f in "$TARGET_HOME"/.*.dotfiles-nixish.bak.* "$(eza_theme_path)".dotfiles-nixish.bak.*; do [[ -e "$f" ]] && left+=("$f"); done
+    (( ${#left[@]} )) && KEEP+=("${#left[@]} backup file(s) (*.dotfiles-nixish.bak.*) - your safety net, delete them when you are happy")
+
+    # --- the plan
+    if (( ${#ACTS[@]} + ${#SACTS[@]} == 0 )); then
+        ok "Nothing from dotfiles-nixish to remove for $TARGET_USER."
+        for x in "${KEEP[@]}"; do info "· $x"; done
+        return 0
+    fi
+    printf '\n   %sWill:%s\n' "$C_B" "$C_0"
+    for x in "${ACTS[@]}" "${SACTS[@]}"; do sub "${x##*|}"; done
+    if (( ${#KEEP[@]} )); then
+        printf '\n   %sLeft in place:%s\n' "$C_B" "$C_0"
+        for x in "${KEEP[@]}"; do info "· $x"; done
+    fi
+    if $OPT_DRY; then printf '\n%s%s🎉 Dry run - nothing was changed%s\n' "$C_B" "$C_G" "$C_0"; return 0; fi
+    if ! $OPT_YES; then
+        $tty || die "No terminal to ask - add -y to uninstall without asking (or --dry-run to only see the plan)."
+        printf '\n'; yesno "Go ahead?" n || { echo "   Nothing changed."; return 0; }
+    fi
+    (( ${#SACTS[@]} )) && get_sudo "for /usr/local/bin$($purge_ok && echo " and the packages")"
+
+    step "Removing"
+    local -a retry=()
+    for x in "${ACTS[@]}" "${SACTS[@]}"; do
+        IFS='|' read -r kind a1 a2 desc <<<"$x"
+        case "$kind" in
+            rc)
+                bak="$a1.dotfiles-nixish.bak.$TS"
+                cp -p "$a1" "$bak" && fix_owner "$bak"
+                strip_rc_blocks "$a1" "$REF_TMP/rc"
+                sh=bash; [[ "$a1" == *zshrc ]] && sh=zsh
+                if have "$sh" && ! "$sh" -n "$REF_TMP/rc" 2>/dev/null; then
+                    warn "$(disp "$a1"): without the block it would not pass $sh -n - not changed."; continue
+                fi
+                cat "$REF_TMP/rc" > "$a1"
+                ok "$(disp "$a1"): $a2 removed (backup: $(disp "$bak"))"
+                [[ "$a2" == "starship block" ]] && continue
+                b=""; for f in "$a1".dotfiles-nixish.bak.*; do [[ -e "$f" && "$f" != "$bak" ]] && { b="$f"; break; }; done
+                [[ -n "$b" ]] && sub "Lines that the first install removed as duplicates (e.g. HISTSIZE, alias ll) are in the oldest backup: $(disp "$b")"
+                ;;
+            login)
+                bak="$a1.dotfiles-nixish.bak.$TS"
+                cp -p "$a1" "$bak" && fix_owner "$bak"
+                awk -v h="$LOGIN_APPEND_HDR" '{ l[NR]=$0 } END {
+                    for (i=1; i<=NR; i++) if (l[i]==h) { s[i]=1
+                        if (i<NR && l[i+1] ~ /^if \[ -n "\$BASH_VERSION" \]/) s[i+1]=1
+                        if (i>1 && l[i-1]=="") s[i-1]=1 }
+                    for (i=1; i<=NR; i++) if (!s[i]) print l[i] }' "$bak" > "$REF_TMP/login"
+                cat "$REF_TMP/login" > "$a1" && ok "$(disp "$a1"): the 2 added lines removed (backup: $(disp "$bak"))" ;;
+            rm)      rm -f "$a1" && ok "$(disp "$a1") deleted"; rmdir "$(dirname "$a1")" 2>/dev/null || true ;;
+            restore) mv -f "$a1" "$a2" && ok "$(disp "$a2") restored from $(disp "$a1")" ;;
+            repo)    rm -rf "$a1" && ok "$(disp "$a1") deleted" ;;
+            srm)     "${SUDO[@]}" rm -f "$a1" && ok "$a1 deleted" ;;
+            pkg)     if pm_remove "$a1"; then ok "package $a1 removed"; else retry+=("$a1"); fi ;;
+            apktest)
+                if grep -qs '@testing' /etc/apk/world; then info "@testing repository kept: installed packages still use it"
+                else "${SUDO[@]}" sed -i '/^@testing /d' /etc/apk/repositories && ok "@testing line removed from /etc/apk/repositories"; fi ;;
+        esac
+    done
+    # a package can be needed by another one on the list: second round
+    for p in "${retry[@]}"; do
+        if pm_remove "$p"; then ok "package $p removed"
+        else warn "package $p kept - other installed packages need it (or $PM refused)"; fi
+    done
+    if $purge_ok; then
+        case "$PM" in
+            apt) info "Dependencies they pulled in can go with: sudo apt autoremove" ;;
+            dnf|yum) info "Dependencies they pulled in can go with: sudo $PM autoremove" ;;
+            pacman) info "Orphaned dependencies: pacman -Qdtq | sudo pacman -Rns -" ;;
+        esac
+    fi
+
+    step "Summary"
+    for x in "${KEEP[@]}"; do info "· $x"; done
+    if (( ${#WARNINGS[@]} )); then printf '\n%s%s⚠ Uninstall finished with %d warning(s) - see above%s\n' "$C_B" "$C_Y" "${#WARNINGS[@]}" "$C_0"
+    else printf '\n%s%s🎉 dotfiles-nixish removed%s - open a new terminal for the plain shell.\n' "$C_B" "$C_G" "$C_0"; fi
+    return 0
+}
+
+if $OPT_STATUS && $OPT_UNINSTALL; then die "Use --status or --uninstall, not both."; fi
+if $OPT_STATUS; then do_status; exit $?; fi
+if $OPT_UNINSTALL; then do_uninstall; exit $?; fi
+
+
 if $OPT_FIND_LOCALE; then
     if [[ -n "$FIND_LOCALE_Q" ]] || ! { [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null; }; then
         FIND_LOCALE_Q="$(loc_query_clean "$FIND_LOCALE_Q")"
@@ -1047,7 +1557,7 @@ if $TTY_OK && { [[ "$OPT_MENU" == yes ]] || { ! $SYS_FLAGS && ! $PART_FLAGS; }; 
 $OPT_DOTFILES || { DO_TOOLS=false; DO_SHELL=false; DO_XTREE=false; }
 parts_label() {   # "tools, shell config, xtree" for what is selected
     local o=()
-    $DO_TOOLS && o+=("tools"); $DO_SHELL && o+=("shell config"); $DO_XTREE && o+=("xtree")
+    $DO_TOOLS && o+=("tools"); $DO_SHELL && o+=("shell config"); $DO_XTREE && o+=("xtree"); $DO_STARSHIP && o+=("starship")
     local IFS=,; o="${o[*]}"; printf '%s' "${o//,/, }"
 }
 
@@ -1057,7 +1567,7 @@ if $SHOW_MENU; then
     if $PART_FLAGS; then P=("$DO_TOOLS" "$DO_SHELL" "$DO_XTREE"); else P=(false false false); fi
     M=(false "$([[ -n "$NEW_USER" ]] && echo true || echo false)" "$DO_SSH" "$([[ -n "$NEW_HOSTNAME" ]] && echo true || echo false)" \
        "$([[ -n "$NET_IP$NET_MASK$NET_GW" ]] && echo true || echo false)" "$([[ -n "$NET_DNS" ]] && echo true || echo false)" \
-       "$([[ -n "$NEW_LOCALE" ]] && echo true || echo false)")
+       "$([[ -n "$NEW_LOCALE" ]] && echo true || echo false)" "$DO_STARSHIP")
     ci="$(cur_iface)"
     while true; do
         cur_net="${ci:-no default route}"; [[ -n "$ci" ]] && cur_net+=" $(cur_addr "$ci") ($(cur_mode "$ci")), gateway $(cur_gw "$ci")"
@@ -1069,7 +1579,8 @@ if $SHOW_MENU; then
                      "Change hostname          now: $(hostname 2>/dev/null)" \
                      "Change IP / subnet / gw  now: $cur_net" \
                      "Change DNS servers       now: $(cur_dns)" \
-                     "Change system locale     now: $(sys_locale_label)  (default: $DEFAULT_LOCALE)"; do
+                     "Change system locale     now: $(sys_locale_label)  (default: $DEFAULT_LOCALE)" \
+                     "Starship prompt          fast, informative prompt in bash/zsh  now: $(have starship && echo installed || echo "not installed")"; do
             mark=" "; ${M[$i]} && mark="${C_G}x${C_0}"
             if (( i == 0 )); then   # item 1 reflects its three parts: x = all, ~ = some
                 mark=" "; [[ " ${P[*]} " == *true* ]] && mark="${C_Y}~${C_0}"
@@ -1100,13 +1611,13 @@ if $SHOW_MENU; then
                     elif [[ "$n" =~ ^1([abc])$ ]]; then
                         case "${BASH_REMATCH[1]}" in a) j=0 ;; b) j=1 ;; *) j=2 ;; esac
                         if ${P[$j]}; then P[j]=false; else P[j]=true; fi
-                    elif [[ "$n" =~ ^[2-7]$ ]]; then if ${M[$((n - 1))]}; then M[n - 1]=false; else M[n - 1]=true; fi
-                    else printf '   %s"%s" is not a menu number (1, 1a, 1b, 1c, 2-7)%s\n' "$C_Y" "$n" "$C_0"; fi
+                    elif [[ "$n" =~ ^[2-8]$ ]]; then if ${M[$((n - 1))]}; then M[n - 1]=false; else M[n - 1]=true; fi
+                    else printf '   %s"%s" is not a menu number (1, 1a, 1b, 1c, 2-8)%s\n' "$C_Y" "$n" "$C_0"; fi
                 done ;;
         esac
     done
     DO_TOOLS=${P[0]}; DO_SHELL=${P[1]}; DO_XTREE=${P[2]}
-    DO_USER=${M[1]}; DO_SSH=${M[2]}; DO_HOST=${M[3]}; DO_NET=${M[4]}; DO_DNS=${M[5]}; DO_LOCALE=${M[6]}
+    DO_USER=${M[1]}; DO_SSH=${M[2]}; DO_HOST=${M[3]}; DO_NET=${M[4]}; DO_DNS=${M[5]}; DO_LOCALE=${M[6]}; DO_STARSHIP=${M[7]}
 
     if $DO_USER; then
         printf '\n%s  New user with sudo access%s\n' "$C_B" "$C_0"
@@ -1206,7 +1717,7 @@ if $DO_NET && [[ "$NET_MODE" == static ]] && ! $DO_DNS; then
 fi
 # --no-packages means no tools; OPT_DOTFILES = any dotfiles part selected
 $OPT_PACKAGES || DO_TOOLS=false
-OPT_DOTFILES=false; { $DO_TOOLS || $DO_SHELL || $DO_XTREE; } && OPT_DOTFILES=true
+OPT_DOTFILES=false; { $DO_TOOLS || $DO_SHELL || $DO_XTREE || $DO_STARSHIP; } && OPT_DOTFILES=true
 # The dotfiles want a real locale: a language-less image default (C.UTF-8,
 # POSIX, nothing) becomes en_US.UTF-8 unless --keep-locale. NixOS defaults to
 # en_US.UTF-8 already (i18n.defaultLocale). Tied to the shell config (1b),
@@ -1231,23 +1742,7 @@ if $SYS_ANY; then
     fi
 fi
 
-if [[ $EUID -eq 0 ]]; then
-    SUDO=()
-else
-    have sudo || die "sudo is required (or run this script as root)."
-    # Pass our PATH through: sudo's secure_path (and sudo-rs defaults) point at
-    # /usr/bin:/bin, which on NixOS holds no coreutils - `sudo install` would fail.
-    # (sbin dirs appended: they are in secure_path but often not in a user's PATH)
-    SUDO=(sudo "$(command -v env)" "PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin")
-    step "Requesting sudo (needed for package installs, /usr/local/bin and system settings)"
-    # 'sudo true', not 'sudo -v': -v asks for a password unless EVERY sudoers
-    # rule for the user is NOPASSWD (openSUSE's default "ALL ALL=(ALL) ALL" counts)
-    sudo true || die "Could not obtain sudo privileges."
-    # keep sudo alive while we work
-    ( while kill -0 $$ 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done ) &
-    SUDO_KEEPALIVE=$!
-    trap 'kill "${SUDO_KEEPALIVE:-}" 2>/dev/null' EXIT
-fi
+get_sudo "needed for package installs, /usr/local/bin and system settings"
 
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-nixish.XXXXXX")"
@@ -1344,6 +1839,30 @@ tealdeer_github() {
         && ok "tldr (tealdeer GitHub release -> /usr/local/bin/tldr)"
 }
 fallback_tldr() { tealdeer_github; }
+
+# ---------------------------------------------------------------- starship fallback
+# Not in Fedora/RHEL, Debian 12 or Ubuntu 24.04 repos: the official static
+# (musl) release binary, checked against its published sha256.
+fallback_starship() {
+    [[ "$PM" == "nix" ]] && return 1
+    local t base="https://github.com/starship/starship/releases/latest/download" want got
+    case "$ARCH" in
+        x86_64) t="x86_64-unknown-linux-musl" ;; aarch64|arm64) t="aarch64-unknown-linux-musl" ;;
+        armv7l|armv6l) t="arm-unknown-linux-musleabihf" ;; i686|i386) t="i686-unknown-linux-musl" ;;
+        riscv64) t="riscv64gc-unknown-linux-musl" ;;
+        *) return 1 ;;
+    esac
+    info "Downloading the starship release binary (starship-$t)..."
+    fetch "$base/starship-$t.tar.gz" "$WORKDIR/starship.tgz" || return 1
+    if have sha256sum && fetch "$base/starship-$t.tar.gz.sha256" "$WORKDIR/starship.sha256"; then
+        want="$(awk '{print $1; exit}' "$WORKDIR/starship.sha256")"
+        got="$(sha256sum "$WORKDIR/starship.tgz" | awk '{print $1}')"
+        [[ -n "$want" && "$want" == "$got" ]] || { warn "starship download failed its sha256 check - not installed."; return 1; }
+    fi
+    tar -xzf "$WORKDIR/starship.tgz" -C "$WORKDIR" starship \
+        && "${SUDO[@]}" install -m 0755 "$WORKDIR/starship" /usr/local/bin/starship \
+        && ok "starship (GitHub release -> /usr/local/bin/starship)"
+}
 
 # ---------------------------------------------------------------- extra repos (RHEL family)
 enable_epel() {
@@ -1825,12 +2344,15 @@ install_block() {  # install_block <rcfile> <snippet>
     if [[ "$nb" -gt 0 ]]; then sub "Found the existing dotfiles-nixish block - it will be refreshed in place"
     else sub "No dotfiles-nixish block yet - it will be added at the end"; fi
     tmp="$WORKDIR/rc.$$"
-    awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-        $0==b {skip=1; next}  $0==e {skip=0; next}  !skip {print}' "$rc" > "$tmp.base"
+    # the starship block (menu 8) always stays right after this block, so
+    # re-runs never reorder the file
+    awk -v b="$MARK_BEGIN" -v e="$MARK_END" -v sb="$STAR_BEGIN" -v se="$STAR_END" '
+        $0==b || $0==sb {skip=1; next}  $0==e || $0==se {skip=0; next}  !skip {print}' "$rc" > "$tmp.base"
+    awk -v sb="$STAR_BEGIN" -v se="$STAR_END" '$0==sb {s=1} s {print} $0==se {s=0}' "$rc" > "$tmp.star"
     dedupe_rc "$rc" "$snippet" "$tmp.base"
     # drop trailing blank lines left behind by a previous block
     sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp.base" > "$tmp"
-    { [[ -s "$tmp" ]] && echo; cat "$snippet"; } >> "$tmp"
+    { [[ -s "$tmp" ]] && echo; cat "$snippet"; [[ -s "$tmp.star" ]] && { echo; cat "$tmp.star"; }; } >> "$tmp"
     if same_file "$tmp" "$rc"; then
         ok "$d already up to date - no changes written"
     else
@@ -1916,6 +2438,30 @@ else
     printf '\n'; info "zsh not installed - skipping ~/.zshrc (re-run with --zsh to install it)."
 fi
 fi   # DO_SHELL
+
+# =============================================================================
+#  6c. Starship prompt (menu item 8 / --starship)
+# =============================================================================
+if $DO_STARSHIP; then
+step "Starship prompt"
+if $OPT_PACKAGES && [[ "$PM" != "none" ]]; then
+    read -ra ST <<<"$(pkg_section starship)"
+    [[ ${#ST[@]} -eq 0 ]] && ST=(starship)   # a custom package list without [starship]
+    nix_batch "${ST[@]}"
+    for t in "${ST[@]}"; do ensure_tool "$t" || true; done
+fi
+if starship_works; then
+    ok "starship $STAR_VER runs (prompt self-test passed)"
+    install_star_block "$TARGET_HOME/.bashrc" bash && STAR_OK=true
+    if have zsh; then install_star_block "$TARGET_HOME/.zshrc" zsh || STAR_OK=false; fi
+    if [[ ! -e "$TARGET_HOME/.config/starship.toml" ]]; then
+        info "No ~/.config/starship.toml - starship's defaults are used. They show Nerd Font icons;"
+        info "without such a font use plain symbols: starship preset plain-text-symbols -o ~/.config/starship.toml"
+    fi
+else
+    warn "starship does not run here ($STAR_ERR) - the prompt was not turned on."
+fi
+fi   # DO_STARSHIP
 fi   # OPT_DOTFILES
 
 # =============================================================================
@@ -1942,6 +2488,11 @@ for t in "${TOOLS[@]}" "${XT[@]}"; do
     else printf '   %s✖%s %s %s(missing)%s\n' "$C_R" "$C_0" "$t" "$C_Y" "$C_0"; fi
 done
 
+if $DO_STARSHIP; then
+    if $STAR_OK; then printf '   %s✔%s starship %s (prompt on)\n' "$C_G" "$C_0" "$STAR_VER"
+    else printf '   %s✖%s starship %s(not turned on)%s\n' "$C_R" "$C_0" "$C_Y" "$C_0"; fi
+fi
+
 if [[ ${#SYS_NOTES[@]} -gt 0 ]]; then
     printf '\n'; for n in "${SYS_NOTES[@]}"; do printf '   %s✔%s %s\n' "$C_G" "$C_0" "$n"; done
 fi
@@ -1960,10 +2511,11 @@ if $OPT_DOTFILES; then
     $DO_XTREE && TRY+="${C_C}xtree -f -L 2 .${C_0}  ${C_C}xtree -r -p -u -t ~${C_0}  "
     $DO_TOOLS && TRY+="${C_C}duf${C_0}  ${C_C}btop${C_0}  ${C_C}tldr tar${C_0}"
     printf '\n%s%s🎉 %s%s\n\n' "$C_B" "$C_G" "$DONE_MSG" "$C_0"
-    if $DO_SHELL; then
+    $STAR_OK && TRY+="  (new terminal: starship prompt)"
+    if $DO_SHELL || $STAR_OK; then
         printf '   Activate it now:   %ssource ~/.bashrc%s%s\n' "$C_B" "$C_0" "$($ZSH_DONE && printf '   (zsh: %ssource ~/.zshrc%s)' "$C_B" "$C_0")"
         printf '   ...or simply open a new terminal.\n'
-        $DO_TOOLS || printf '   (tools not installed in this run: aliases use them where present and fall back to plain commands)\n'
+        $DO_SHELL && ! $DO_TOOLS && printf '   (tools not installed in this run: aliases use them where present and fall back to plain commands)\n'
         printf '\n'
     fi
     printf '   Try:  %s\n' "${TRY%  }"

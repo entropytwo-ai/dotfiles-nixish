@@ -27,6 +27,7 @@
 #   [sudo]           only for "Create a user" when sudo is missing
 #   [locale]         only when the chosen locale must be generated
 #   [tools]          the tool set - the "Dotfiles" menu item
+#   [starship]       only with menu item 8 / --starship
 # Unknown packages are skipped with a warning; the run goes on.
 
 [prerequisites]
@@ -52,6 +53,9 @@ sudo       nix=-           # Lets the new user run admin commands (only for "Cre
 
 [locale]
 locales    cmd=- apt=locales dnf=glibc-langpack-en,glibc-locale-source zypper=glibc-locale pacman=- apk=- nix=-  # Locale data, so the chosen locale can be generated
+
+[starship]
+starship                   # Fast, informative shell prompt (git branch, exit code, languages ...); falls back to the official GitHub release
 
 [tools]
 eza                        # Modern ls with colors, icons and git status (the l / ll aliases; theme: lighter blue timestamps); falls back to the eza repo or GitHub
