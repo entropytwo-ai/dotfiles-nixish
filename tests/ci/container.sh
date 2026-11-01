@@ -119,6 +119,17 @@ if [ "$SCENARIO" = full ]; then
     cat /tmp/status1.log
     bash /repo/tests/ci/verify.sh status "$TEST_USER" "$HOME_DIR" "$SRC" /tmp/status1.log "$RC3"
 
+    say "install.sh --uninstall --dry-run: starship has its own choice"
+    as_user "cd '$CHECKOUT' && bash install.sh --uninstall --dry-run --purge-packages --keep-starship" >/tmp/plan1.log 2>&1
+    as_user "cd '$CHECKOUT' && bash install.sh --uninstall --dry-run --purge-starship" >/tmp/plan2.log 2>&1
+    cat /tmp/plan1.log /tmp/plan2.log
+    if grep -q 'starship kept' /tmp/plan1.log && ! grep -q '(starship' /tmp/plan1.log \
+        && grep -q '(starship' /tmp/plan2.log && grep -q 'Tool packages kept' /tmp/plan2.log; then
+        echo "  ✔ --keep-starship keeps starship, --purge-starship removes only starship"
+    else
+        echo "::error title=uninstall plan::--keep-starship / --purge-starship plan is wrong"; exit 1
+    fi
+
     say "install.sh --uninstall -y --purge-packages"
     set +e; as_user "cd '$CHECKOUT' && bash install.sh --uninstall -y --purge-packages" >/tmp/uninstall.log 2>&1; RC4=$?; set -e
     cat /tmp/uninstall.log

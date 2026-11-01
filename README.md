@@ -676,11 +676,20 @@ It looks at what is really there and shows a plan first:
   eza theme (an older theme from a backup comes back; one you changed
   stays), xtree with the `~/xtree` link (your old `~/xtree` comes back from
   its backup), and the `/usr/local/bin/bat` link.
-- **Asked, or `--purge-packages`:** the `[tools]` and starship packages,
-  the GitHub release binaries in `/usr/local/bin` and the eza apt
-  repository. Prerequisites (curl, git ...) and zsh are never removed, and
-  neither are Nix packages. Note that this also removes a tool you had
-  before dotfiles-nixish. `--keep-packages` skips the question.
+- **Asked, or `--purge-packages`:** the `[tools]` packages, their GitHub
+  release binaries in `/usr/local/bin` and the eza apt repository.
+  Prerequisites (curl, git ...) and zsh are never removed, and neither are
+  Nix packages. Note that this also removes a tool you had before
+  dotfiles-nixish. `--keep-packages` skips the question.
+- **Starship has its own choice:** its prompt block always goes, but the
+  starship program is asked about separately (default: keep):
+
+  | Flags | Tools | starship program |
+  |-------|-------|------------------|
+  | `-y` (or answer no twice) | kept | kept |
+  | `--purge-packages` | removed | removed |
+  | `--purge-packages --keep-starship` | removed | kept |
+  | `--purge-starship` | kept | removed |
 - **Asked, or `--remove-repo`:** the `~/.dotfiles-nixish` copy
   (`--keep-repo` skips the question).
 - **Always kept:** the backups (your safety net) and system settings -
