@@ -128,7 +128,7 @@ if $WANT_SHELL; then
         fail "the login greeting prints errors:"; grep -Ei 'command not found|No fortunes|syntax error|No such file' <<<"$greet" | sed 's/^/      /'
     else pass "interactive shell starts without errors"; fi
     # "l ." not "l": with no path and a stdin that is not a terminal (as here,
-    # or ssh host l / cron), eza >= 0.21 reads the file names from stdin
+    # or ssh host l / cron), recent eza (seen with 0.23.5) reads file names from stdin
     if $WANT_TOOLS; then
         [[ -n "$greet" ]] && pass "greeting shows (fastfetch + fortune | cowsay)" || fail "no greeting in an interactive shell"
         expect "alias l uses eza" "type l" 'eza'
