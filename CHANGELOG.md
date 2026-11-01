@@ -3,6 +3,92 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-11-01: Status check, uninstall and the starship prompt
+
+- **`--status` / `--doctor`:** a read-only report of the system (busy
+  package manager or cloud-init, locale), tools, xtree, the rc blocks (up to
+  date with the repo, pass `bash -n` / `zsh -n`), login file, eza theme,
+  starship, the repo copy against GitHub, system settings and backups. Lines
+  are ✔ / ⚠ / ✖ / · with the fixing command; exit code 1 when something is
+  broken.
+- **`--uninstall`:** shows a plan, asks (or `-y`, or `--dry-run` for only the
+  plan), then removes the rc blocks (backup first, result must pass `-n`),
+  the login-file lines or the unchanged `~/.bash_profile` it created, the eza
+  theme (an older one is restored), xtree and `~/xtree` (an older `~/xtree`
+  is restored) and the bat link. `--purge-packages` also removes the
+  `[tools]` and starship packages, the GitHub release binaries and the eza
+  apt repository (never curl/git/zsh, never Nix packages); `--remove-repo`
+  deletes `~/.dotfiles-nixish`. Backups and system settings are kept.
+- **Menu item 8 / `--starship`:** installs starship (distro package, or the
+  sha256-checked GitHub release in `/usr/local/bin`), checks that
+  `starship prompt` really runs, and turns it on in its own guarded block in
+  `~/.bashrc` / `~/.zshrc` (interactive shells only, not with `TERM=dumb`).
+  New `[starship]` section in `packages/package_list.txt`; NixOS module
+  option `programs.dotfiles-nixish.starship`.
+- The sudo request is now one function (`get_sudo`) shared by install and
+  uninstall.
+- **Tests:** the full CI job now installs with `--starship`, checks the
+  prompt in bash and zsh, then runs `--status`, `--uninstall -y
+  --purge-packages` and `--status` again and checks that everything added is
+  gone while backups and prerequisites stay.
+
+## 2026-10-31: Wait for a busy package manager instead of looking frozen
+
+- On a new Fedora Cloud VM (from proxmox-linux-quick-deploy), the run
+  stopped after `curl (already installed)` with no output. Likely cause:
+  cloud-init's first-boot package upgrade held the rpm/dnf lock, and the
+  installer hides package-manager output, so it waited silently.
+- New `wait_pm_idle`: before package checks/installs it checks for a
+  running cloud-init (`cloud-init status`) or dnf/yum/rpm/zypper/pacman/
+  apt/dpkg process. If one is busy it prints what it is and a progress line
+  every 30 s, then continues when it is free. Max wait 30 min
+  (`DOTFILES_PM_WAIT`), then a warning. Skipped when cloud-init itself
+  started the installer.
+
+## 2026-10-31: Automatic tests on every distro
+
+- **GitHub Actions** (`.github/workflows/test-install.yml`) runs on every push,
+  pull request and weekly: a full `install.sh --zsh` in fresh Debian 12/13
+  (also arm64), Ubuntu 24.04/26.04, Fedora, Rocky 9, Arch, openSUSE
+  Tumbleweed/Leap and Alpine containers, followed by a second run that must
+  change nothing; only `--tools` / `--shell-config` / `--xtree`; the piped
+  one-liner; the NixOS code path in a `nixos/nix` container; flake and
+  non-flake `nix build`; and a NixOS VM booted with the module.
+- **`tests/ci/verify.sh`** checks by running things as the user in a new login:
+  tools work with their data (fortune quotes, tldr pages, generated locale),
+  xtree, aliases, error-free greeting (bash and zsh), eza theme colour, one rc
+  block, file ownership, clean checkout, `--list-packages` all installed, and
+  that parts not chosen were not done.
+- **`tests/nixos-vm.nix`** is a flake check (`checks.x86_64-linux.nixos-module`).
+- **`tests/ci/known-gaps.txt`** lists tools a distro's repos lack (glances on
+  openSUSE Leap); they show as notes, not failures.
+
+### Fixed (found by the first CI runs)
+
+- **Alpine got no packages:** `apk` is in `/sbin`, which a normal user's PATH
+  can lack. install.sh now adds the sbin directories to PATH.
+- **Alpine:** `duf`, `cowsay` and `tealdeer` are only in edge/testing. The
+  package list can now say `name@testing`, which adds that repo as a tagged one
+  (used only for those packages).
+- **openSUSE asked for a password** even with NOPASSWD sudo: `sudo -v` needs
+  *every* sudoers rule to be NOPASSWD (openSUSE has `ALL ALL=(ALL) ALL`).
+  It is now `sudo true`.
+- **tldr had no pages on Debian 12 / Ubuntu 24.04:** their tldr clients download
+  from an address that no longer exists. When `tldr --update` fails, the static
+  tealdeer release goes to `/usr/local/bin/tldr`. The Haskell tldr also failed
+  without `~/.local/share`, which is now created.
+- **Every rerun made backups on Fedora/Rocky/Arch:** files were compared with
+  `cmp`, which minimal images lack. Now `cksum` (coreutils).
+- **xtree failed on openSUSE** without `find`: `find` (findutils) and `tput`
+  are now prerequisites.
+- **NixOS module:** NixOS's own `l`/`ll` aliases overrode the eza ones with
+  `shellConfig = true`. The module now removes them.
+- **False "fortune has no quote database" warning on openSUSE Leap:** its
+  fortune prints nothing before the locale is set. The check now also accepts
+  `fortune -f` listing quote files.
+- **Locale warnings** from the rc block on a Nix glibc without
+  `LOCALE_ARCHIVE`: the locale is now tested with bash itself, not `locale -a`.
+
 ## 2026-10-28: eza theme file — lighter timestamp colour
 
 - Added `config/eza-theme.yml` with all eza defaults and the timestamp colour

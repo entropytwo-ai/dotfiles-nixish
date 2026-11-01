@@ -1,0 +1,144 @@
+# >>> Belongs in .github/workflows/test-install.yml - the GitHub App that pushed
+# >>> this branch may not write workflow files. Move it with:
+# >>>   git mv tests/ci/test-install.yml .github/workflows/ && git commit -m "ci: enable workflow" && git push
+# Runs install.sh on fresh containers of every supported distro and checks the
+# result by running things as the user would (tests/ci/verify.sh), plus a real
+# NixOS VM with the NixOS module (tests/nixos-vm.nix).
+name: Test install
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', '.github/badges/**', '.github/*.png', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**.md', '.github/badges/**', '.github/*.png', 'LICENSE']
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'   # weekly: distros and package repos change under us
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # the one-liner test clones the branch being tested (also from a fork's PR)
+  DOTFILES_REPO: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
+  DOTFILES_BRANCH: ${{ github.head_ref || github.ref_name }}
+
+jobs:
+  lint:
+    name: Syntax + shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n
+        run: for f in install.sh scripts/*.sh tests/ci/*.sh config/bashrc_append.sh; do bash -n "$f" || exit 1; done
+      - name: zsh -n
+        run: sudo apt-get install -y -qq zsh >/dev/null && zsh -n config/zshrc_append.sh
+      - name: shellcheck (errors)
+        run: shellcheck -S error install.sh scripts/*.sh tests/ci/*.sh
+
+  distro:
+    name: ${{ matrix.image }}${{ matrix.arch == 'arm64' && ' (arm64)' || '' }} - full install
+    needs: lint
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64]
+        image:
+          - debian:12
+          - debian:13
+          - ubuntu:24.04
+          - ubuntu:26.04
+          - fedora:latest
+          - rockylinux/rockylinux:9
+          - archlinux:latest
+          - opensuse/tumbleweed
+          - opensuse/leap:15.6
+          - alpine:latest
+        include:
+          - { image: 'debian:12', arch: arm64 }   # Raspberry Pi OS is Debian 12 arm64
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh --zsh in a fresh ${{ matrix.image }}
+        run: docker run --rm -v "$PWD:/repo:ro" ${{ matrix.image }} sh /repo/tests/ci/container.sh full
+
+  parts:
+    name: ${{ matrix.image }} - only ${{ matrix.part }}
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:12', 'fedora:latest', 'alpine:latest']
+        part: [tools, shell, xtree]
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh --${{ matrix.part == 'shell' && 'shell-config' || matrix.part }}
+        run: docker run --rm -v "$PWD:/repo:ro" ${{ matrix.image }} sh /repo/tests/ci/container.sh ${{ matrix.part }}
+
+  oneliner:
+    name: ${{ matrix.image }} - one-liner (curl | bash)
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:12', 'alpine:latest']
+    steps:
+      - uses: actions/checkout@v4
+      - name: script piped into bash, repo cloned from ${{ env.DOTFILES_BRANCH }}
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -e DOTFILES_REPO -e DOTFILES_BRANCH \
+            ${{ matrix.image }} sh /repo/tests/ci/container.sh oneliner
+
+  nix-container:
+    name: NixOS code path (nixos/nix container)
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh as on NixOS (nix packages, no system rebuild)
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -e NIX_CONTAINER=1 -e TEST_USER=root \
+            nixos/nix sh /repo/tests/ci/container.sh full
+
+  nixos:
+    name: NixOS VM with the module + flake/non-flake builds
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: system-features = nixos-test benchmark big-parallel kvm
+      - name: nix flake check (evaluates everything)
+        run: nix flake check --no-build -L
+      - name: nix build .#default - the tool set + xtree, and they run
+        run: |
+          nix build -L .#default
+          ./result/bin/xtree -L 1 /etc | grep -q Name
+          ./result/bin/fortune | grep -q .           # quotes are there, not just the binary
+          ./result/bin/cowsay moo | grep -q moo
+          for t in eza duf fastfetch nmap ncdu btop fzf glances bat tldr; do
+            ./result/bin/$t --version >/dev/null || { echo "::error::$t does not run"; exit 1; }
+          done
+      - name: nix-build default.nix (without flakes)
+        run: |
+          nix-build -I nixpkgs=https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz default.nix -o result-nonflake
+          ./result-nonflake/bin/xtree -L 1 /etc | grep -q Name
+      - name: Boot a NixOS VM with the module and check it as a user
+        run: nix build -L .#checks.x86_64-linux.nixos-module

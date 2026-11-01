@@ -13,6 +13,7 @@
 #                  a,b   try a, then b (first that installs wins)
 #                  a+b   install a and b together
 #                  -     not needed / skip on that package manager
+#                  x@testing  (apk) take x from Alpine's edge/testing repo
 #   cmd=a,b      command(s) proving it is installed (any one is enough);
 #                without cmd= a command named like "name" or the installed
 #                package counts
@@ -26,6 +27,7 @@
 #   [sudo]           only for "Create a user" when sudo is missing
 #   [locale]         only when the chosen locale must be generated
 #   [tools]          the tool set - the "Dotfiles" menu item
+#   [starship]       only with menu item 8 / --starship
 # Unknown packages are skipped with a warning; the run goes on.
 
 [prerequisites]
@@ -35,6 +37,8 @@ wget                       # Alternative downloader (fallback for curl)
 git                        # Version control; fetches and updates this repo
 tar        nix=gnutar      # Unpacks .tar.gz archives (GitHub fallback downloads)
 gpg        apt=gnupg dnf=gnupg2,gnupg pacman=gnupg zypper=gpg2,gnupg apk=gnupg nix=gnupg  # Verifies signing keys of extra package repos
+find       apt=findutils dnf=findutils pacman=findutils zypper=findutils apk=findutils nix=findutils  # find - xtree walks directories with it (missing on minimal openSUSE images)
+tput       apt=ncurses-bin dnf=ncurses pacman=ncurses zypper=ncurses-utils apk=ncurses nix=ncurses  # tput - xtree's colours
 acl        cmd=getfacl     # getfacl/setfacl - lets xtree show file ACLs
 lsb        cmd=lsb_release apt=lsb-release dnf=redhat-lsb-core,lsb_release pacman=lsb-release zypper=lsb-release apk=lsb-release-minimal,lsb-release nix=lsb-release  # lsb_release - reports the distro name and version
 
@@ -50,13 +54,16 @@ sudo       nix=-           # Lets the new user run admin commands (only for "Cre
 [locale]
 locales    cmd=- apt=locales dnf=glibc-langpack-en,glibc-locale-source zypper=glibc-locale pacman=- apk=- nix=-  # Locale data, so the chosen locale can be generated
 
+[starship]
+starship                   # Fast, informative shell prompt (git branch, exit code, languages ...); falls back to the official GitHub release
+
 [tools]
 eza                        # Modern ls with colors, icons and git status (the l / ll aliases; theme: lighter blue timestamps); falls back to the eza repo or GitHub
-duf                        # Disk usage/free space as a colorful table (a better df)
-cowsay                     # ASCII cow that says text (the login greeting)
+duf        apk=duf,duf@testing  # Disk usage/free space as a colorful table (a better df)
+cowsay     apk=cowsay,cowsay@testing  # ASCII cow that says text (the login greeting)
 fortune    apt=fortune-mod+fortunes-min dnf=fortune-mod pacman=fortune-mod zypper=fortune apk=fortune nix=fortune  # Random quotes for the cow to say, with the quote database
 fastfetch                  # System info summary shown at login (OS, CPU, memory ...); falls back to GitHub
-tldr       apt=tldr,tealdeer dnf=tldr,tealdeer pacman=tealdeer,tldr zypper=tealdeer,tldr apk=tealdeer,tldr nix=tldr,tealdeer  # Short, example-based help pages for commands (tldr tar)
+tldr       apt=tldr,tealdeer dnf=tldr,tealdeer pacman=tealdeer,tldr zypper=tealdeer,tldr apk=tealdeer,tealdeer@testing nix=tldr,tealdeer  # Short, example-based help pages for commands (tldr tar)
 nmap                       # Network scanner: find hosts and open ports
 ncdu                       # Interactive disk usage browser - find what fills the disk
 btop                       # Resource monitor for CPU, memory, disks, network and processes
