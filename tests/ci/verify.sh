@@ -45,15 +45,35 @@ one_block() {
     [[ "$(grep -cxF '# dotfiles-nixish BEGIN' "$1")" == 1 && "$(grep -cxF '# dotfiles-nixish END' "$1")" == 1 ]]
 }
 
+# tools this distro's repositories do not have (tests/ci/known-gaps.txt)
+GAPS=""
+if [[ -r /etc/os-release ]]; then
+    OSKEY="$(. /etc/os-release; echo "${ID:-}:${VERSION_ID:-}")"
+    while read -r key tools; do
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        [[ "$OSKEY" == "$key"* ]] && GAPS+=" $tools"
+    done < "$(dirname "$0")/known-gaps.txt"
+fi
+is_gap() { [[ " $GAPS " == *" $1 "* ]]; }
+# drop the install log lines that only report a known gap
+gap_filter() {
+    local t re=""
+    for t in $GAPS; do re+="${re:+|}✖ $t \\(missing\\)|Could not install '$t'|· $t "; done
+    if [[ -n "$re" ]]; then grep -Ev "$re"; else cat; fi
+}
+
 printf '\n== %s (user %s) ==\n' "$SCENARIO" "$U"
+[[ -n "$GAPS" ]] && note "not in this distro's repositories (known-gaps.txt):$GAPS"
 
 # ---------------------------------------------------------------------------
 # The run itself
 # ---------------------------------------------------------------------------
 [[ "$RC" == 0 ]] && pass "install.sh exited 0" || fail "install.sh exited $RC"
-if grep -q '✖' "$LOG"; then fail "install log has ✖ lines:"; grep '✖' "$LOG" | sed 's/^/      /'
+bad="$(grep '✖' "$LOG" | gap_filter)"
+if [[ -n "$bad" ]]; then fail "install log has ✖ lines:"; sed 's/^/      /' <<<"$bad"
 else pass "no ✖ in the install log"; fi
-if grep -q '⚠' "$LOG"; then fail "install.sh printed warnings:"; grep '⚠' "$LOG" | sed 's/^/      /'
+bad="$(grep '⚠' "$LOG" | gap_filter)"
+if [[ -n "$bad" ]]; then fail "install.sh printed warnings:"; sed 's/^/      /' <<<"$bad"
 else pass "no warnings"; fi
 check "the bash greeting/summary reached the end ('🎉')" grep -q '🎉' "$LOG"
 
@@ -85,6 +105,7 @@ echo "-- tools (1a)"
 TOOL_CMDS=(eza duf cowsay fortune fastfetch tldr nmap ncdu btop fzf glances bat)
 if $WANT_TOOLS; then
     for t in "${TOOL_CMDS[@]}"; do
+        if is_gap "$t"; then note "$t skipped - not in this distro's repositories"; continue; fi
         case "$t" in
             cowsay)    expect "cowsay draws a cow" "cowsay moo" 'moo' ;;
             fortune)   out="$(uout 'fortune')"
@@ -204,7 +225,7 @@ if [[ -d "$SRC/.git" ]] && command -v git >/dev/null; then
 fi
 if $WANT_TOOLS; then
     lp="$(in_login "bash '$SRC/install.sh' --list-packages")"
-    missing="$(sed -n '/Always/,/Only when needed/p' <<<"$lp" | grep '·' || true)"
+    missing="$(sed -n '/Always/,/Only when needed/p' <<<"$lp" | grep '·' | gap_filter || true)"
     [[ -z "$missing" ]] && pass "--list-packages shows every package as installed (✔)" || fail "--list-packages still lists packages as not installed: $missing"
 fi
 

@@ -1,0 +1,7 @@
+# Tools a distro's OWN repositories do not have. install.sh warns about them
+# and carries on (the right behaviour), so the tests report them as notes
+# instead of failures. Remove a line once the distro ships the package.
+#
+# <os-release ID>:<VERSION_ID prefix>   <tool> ...
+opensuse-leap:15   glances
+opensuse-leap:16   glances nmap
