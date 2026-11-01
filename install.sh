@@ -1573,8 +1573,11 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]] && [[ ${#TOOLS[@]} -gt 0 ]]; then
 
     # The fortune binary can exist without any quote database ("No fortunes found"):
     # apt's --no-install-recommends skips 'fortunes-min'/'fortunes'. Verify and fix.
-    # (judged by output: some fortune builds, e.g. openSUSE Leap's, exit non-zero after printing a quote)
-    fortune_ok() { [[ -n "$(fortune 2>/dev/null)" ]]; }
+    # A quote, or 'fortune -f' listing quote files (openSUSE Leap's fortune prints
+    # nothing before the locale is set, yet has its database).
+    fortune_ok() {
+        [[ -n "$(fortune 2>/dev/null)" ]] || [[ "$(fortune -f 2>&1 | grep -c '%')" -gt 1 ]]
+    }
     if [[ " ${TOOLS[*]} " == *" fortune "* ]] && have fortune && ! fortune_ok; then
         case "$PM" in
             apt)            fdb="fortunes-min fortunes" ;;
