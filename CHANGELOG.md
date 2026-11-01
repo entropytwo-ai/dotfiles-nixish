@@ -3,6 +3,22 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-10-31: Automatic tests on every distro
+
+- **GitHub Actions** (`.github/workflows/test-install.yml`) runs on every push,
+  pull request and weekly: a full `install.sh --zsh` in fresh Debian 12/13
+  (also arm64), Ubuntu 24.04/26.04, Fedora, Rocky 9, Arch, openSUSE
+  Tumbleweed/Leap and Alpine containers, followed by a second run that must
+  change nothing; only `--tools` / `--shell-config` / `--xtree`; the piped
+  one-liner; the NixOS code path in a `nixos/nix` container; flake and
+  non-flake `nix build`; and a NixOS VM booted with the module.
+- **`tests/ci/verify.sh`** checks by running things as the user in a new login:
+  tools work with their data (fortune quotes, tldr pages, generated locale),
+  xtree, aliases, error-free greeting (bash and zsh), eza theme colour, one rc
+  block, file ownership, clean checkout, `--list-packages` all installed, and
+  that parts not chosen were not done.
+- **`tests/nixos-vm.nix`** is a flake check (`checks.x86_64-linux.nixos-module`).
+
 ## 2026-10-28: eza theme file — lighter timestamp colour
 
 - Added `config/eza-theme.yml` with all eza defaults and the timestamp colour

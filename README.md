@@ -33,6 +33,7 @@
 - [🔄 Updating](#-updating)
 - [✂️ Only the files your OS needs](#️-only-the-files-your-os-needs)
 - [🧩 Manual / partial use](#-manual--partial-use)
+- [🧪 Tests](#-tests)
 - [🗂 Layout](#-layout)
 
 ---
@@ -602,6 +603,35 @@ sudo install -m 755 ~/.dotfiles-nixish/scripts/xtree.sh /usr/local/bin/xtree
 <sub>[↑ Back to contents](#table-of-contents)</sub>
 
 
+## 🧪 Tests
+
+Every push and pull request (and a weekly run, because distros change) runs
+[`.github/workflows/test-install.yml`](.github/workflows/test-install.yml):
+
+| Job | What runs |
+|-----|-----------|
+| Full install | `install.sh --zsh` in fresh Debian 12/13 (also arm64, like a Pi), Ubuntu 24.04/26.04, Fedora, Rocky 9, Arch, openSUSE Tumbleweed/Leap and Alpine containers, then once more |
+| Parts | only `--tools`, only `--shell-config`, only `--xtree` (Debian, Fedora, Alpine) |
+| One-liner | the script piped into bash, so it clones the repo itself |
+| NixOS | the NixOS code path in a `nixos/nix` container, `nix build` with and without flakes, and a real NixOS VM with the module |
+
+The checks ([`tests/ci/verify.sh`](tests/ci/verify.sh)) run commands the
+way you would, as a normal user in a new login: every tool must work *with
+its data* (fortune has quotes, tldr has pages, the locale was generated), xtree
+draws a tree, the aliases and greeting work without errors, eza uses the theme,
+the rc block exists once, all files belong to the user, and the second run
+changes nothing. A part you did not choose must not have been done.
+
+Run one locally with Docker:
+
+```bash
+docker run --rm -v "$PWD:/repo:ro" debian:12 sh /repo/tests/ci/container.sh full   # or tools | shell | xtree
+```
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
+---
+
 ## 🗂 Layout
 
 `[nixos]` files are removed locally on other distros. Everything else is
@@ -619,6 +649,9 @@ default.nix                 entry point without flakes     [nixos]
 nix/module.nix              NixOS module                   [nixos]
 nix/packages.nix            reads the list for Nix         [nixos]
 nix/xtree.nix               xtree as a Nix package         [nixos]
+tests/ci/                   distro tests (container.sh, verify.sh)
+tests/nixos-vm.nix          NixOS VM test of the module (nix flake check)
+.github/workflows/          runs the tests on GitHub
 CHANGELOG.md                what each change added
 ```
 
