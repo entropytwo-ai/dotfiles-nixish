@@ -61,6 +61,7 @@ DO_STARSHIP=false      # 8: starship prompt (package + init block in ~/.bashrc /
 OPT_STATUS=false       # --status: read-only report, then exit
 OPT_UNINSTALL=false    # --uninstall: undo what install.sh did to this user / system
 OPT_PURGE=ask          # --purge-packages / --keep-packages (with --uninstall)
+OPT_PURGE_STAR=ask     # --purge-starship / --keep-starship (with --uninstall; ask = follow --purge-packages)
 OPT_RM_REPO=ask        # --remove-repo / --keep-repo (with --uninstall)
 
 usage() {
@@ -125,10 +126,15 @@ Check / undo:
                         shows the plan and asks first (-y: don't ask,
                         --dry-run: only show the plan). Backups and system
                         settings (users, SSH, network, locale) are kept.
-  --purge-packages      with --uninstall: also remove the [tools] and starship
-                        packages, the GitHub fallback binaries and extra repos
+  --purge-packages      with --uninstall: also remove the [tools] packages,
+                        the GitHub fallback binaries, extra repos - and
+                        starship unless --keep-starship
                         (never the prerequisites like curl/git, never zsh)
-  --keep-packages       with --uninstall: don't ask about packages
+  --keep-packages       with --uninstall: don't ask about the tool packages
+  --purge-starship      with --uninstall: also remove the starship program
+                        (on its own, without the other tools)
+  --keep-starship       with --uninstall: keep the starship program (even
+                        with --purge-packages); its prompt block still goes
   --remove-repo | --keep-repo   with --uninstall: delete / keep ~/.dotfiles-nixish
 
 Other:
@@ -177,6 +183,8 @@ while [[ $# -gt 0 ]]; do
         --uninstall) OPT_UNINSTALL=true ;;
         --purge-packages) OPT_PURGE=yes ;;
         --keep-packages) OPT_PURGE=no ;;
+        --purge-starship) OPT_PURGE_STAR=yes ;;
+        --keep-starship) OPT_PURGE_STAR=no ;;
         --remove-repo) OPT_RM_REPO=yes ;;
         --keep-repo) OPT_RM_REPO=no ;;
         --menu) OPT_MENU=yes ;;
@@ -1360,7 +1368,7 @@ strip_rc_blocks() {   # strip_rc_blocks <in> <out> : both dotfiles-nixish blocks
 # shellcheck disable=SC2088  # "~/..." in messages is text
 do_uninstall() {
     local f rc sh d p t bak b x w kind a1 a2 desc purge_ok=false n tty=false
-    local -a ACTS=() SACTS=() KEEP=() PKGS=() FBIN=() PREQ=() left=()
+    local -a ACTS=() SACTS=() KEEP=() PKGS=() FBIN=() SPKGS=() SBIN=() PREQ=() left=()
     REF_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-nixish-uninstall.XXXXXX")"
     trap 'rm -rf "$REF_TMP"; kill "${SUDO_KEEPALIVE:-}" 2>/dev/null' EXIT
     [[ -t 1 ]] && { exec 3</dev/tty; } 2>/dev/null && tty=true
@@ -1415,18 +1423,25 @@ do_uninstall() {
         else
             mapfile -t PREQ < <(installed_pkgs prerequisites zsh ssh sudo locale)
             while IFS= read -r p; do
-                [[ -n "$p" && " ${PREQ[*]} " != *" $p "* ]] && PKGS+=("$p")
-            done < <(installed_pkgs tools starship)
+                [[ -n "$p" && " ${PREQ[*]} " != *" $p "* ]] && SPKGS+=("$p")
+            done < <(installed_pkgs starship)
+            while IFS= read -r p; do
+                [[ -n "$p" && " ${PREQ[*]} " != *" $p "* && " ${SPKGS[*]} " != *" $p "* ]] && PKGS+=("$p")
+            done < <(installed_pkgs tools)
         fi
     fi
-    for x in eza fastfetch tldr starship; do
+    for x in eza fastfetch tldr; do
         [[ -f "/usr/local/bin/$x" && ! -L "/usr/local/bin/$x" ]] && FBIN+=("/usr/local/bin/$x")
     done
+    [[ -f /usr/local/bin/starship && ! -L /usr/local/bin/starship ]] && SBIN+=(/usr/local/bin/starship)
+    local purge_flag="$OPT_PURGE"   # what the flags said, before any question
+
+    # tools
     if (( ${#PKGS[@]} + ${#FBIN[@]} )) || [[ -e /etc/apt/sources.list.d/gierens.list ]]; then
         if [[ "$OPT_PURGE" == ask ]] && $tty && ! $OPT_YES && ! $OPT_DRY; then
             info "Installed tool packages: ${PKGS[*]:-none}${FBIN[*]:+ - GitHub binaries: ${FBIN[*]}}"
             info "(this includes any of them you had before dotfiles-nixish; curl, git, zsh ... are never removed)"
-            yesno "Remove these packages too?" n && OPT_PURGE=yes
+            yesno "Remove these tool packages too?" n && OPT_PURGE=yes
         fi
         if [[ "$OPT_PURGE" == yes ]]; then
             purge_ok=true
@@ -1438,7 +1453,25 @@ do_uninstall() {
             grep -qs '^@testing ' /etc/apk/repositories && SACTS+=("apktest|||remove the @testing line from /etc/apk/repositories (if nothing uses it any more)")
         else
             w="${PKGS[*]}"; [[ -n "$w" && -n "${FBIN[*]}" ]] && w+=", "; w+="${FBIN[*]}"
-            KEEP+=("Packages kept: $w (add --purge-packages to remove them)")
+            KEEP+=("Tool packages kept: $w (add --purge-packages to remove them)")
+        fi
+    fi
+
+    # starship: its own question / flags; without them it follows --purge-packages
+    if (( ${#SPKGS[@]} + ${#SBIN[@]} )); then
+        w="${SPKGS[*]} ${SBIN[*]}"; w="$(xargs <<<"$w")"
+        if [[ "$OPT_PURGE_STAR" == ask ]]; then
+            if [[ "$purge_flag" != ask ]]; then OPT_PURGE_STAR="$purge_flag"
+            elif $tty && ! $OPT_YES && ! $OPT_DRY; then
+                yesno "Also remove the starship program ($w)?" n && OPT_PURGE_STAR=yes
+            fi
+        fi
+        if [[ "$OPT_PURGE_STAR" == yes ]]; then
+            purge_ok=true
+            for p in "${SPKGS[@]}"; do SACTS+=("pkg|$p||remove package $p (starship)"); done
+            for x in "${SBIN[@]}"; do SACTS+=("srm|$x||delete $x (starship, GitHub release binary)"); done
+        else
+            KEEP+=("starship kept: $w - only its prompt block is removed (add --purge-starship to remove it)")
         fi
     fi
 

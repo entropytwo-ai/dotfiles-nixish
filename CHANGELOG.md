@@ -3,6 +3,16 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-11-01: Uninstall asks about starship separately
+
+- `--uninstall` now asks about the starship program in its own question
+  (default: keep), after the tool packages question. Its prompt block is
+  always removed.
+- New flags: `--purge-starship` removes only starship, `--keep-starship`
+  keeps it even with `--purge-packages`. `--purge-packages` alone still
+  removes both.
+- CI: the full job checks both plans with `--dry-run`.
+
 ## 2026-11-01: Status check, uninstall and the starship prompt
 
 - **`--status` / `--doctor`:** a read-only report of the system (busy
