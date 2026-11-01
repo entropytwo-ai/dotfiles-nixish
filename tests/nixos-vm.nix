@@ -37,7 +37,8 @@ pkgs.testers.runNixOSTest {
     assert "Name" in as_alice("xtree -p -u -t -L 1 /etc")
 
     # shell config applied system-wide (shellConfig = true)
-    assert "eza" in as_alice("type l")
+    t = as_alice("type l")
+    assert "eza" in t, f"type l: {t!r}"
     assert "alias" in as_alice("type cowsays")
     assert "eza" in as_alice("alias l", shell="zsh")
     greet = machine.succeed("su - alice -c 'TERM=dumb bash -ic true' </dev/null 2>&1")

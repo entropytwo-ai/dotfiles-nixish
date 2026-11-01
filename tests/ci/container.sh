@@ -58,8 +58,11 @@ cp -a /repo "$CHECKOUT"
 [ "$TEST_USER" = root ] || chown -R "$TEST_USER:" "$CHECKOUT"
 
 as_user() {  # as_user <command string>  - run like the user would, in a login shell
-    if [ "$TEST_USER" = root ]; then bash -lc "$1"
-    else su - "$TEST_USER" -c "$1"; fi
+    # via a file + explicit 'bash -l': busybox su (Alpine) starts no login shell
+    # for -c and leaves PATH at /bin:/usr/bin, unlike a real login
+    printf '%s\n' "$1" > /tmp/ci-cmd.sh; chmod 644 /tmp/ci-cmd.sh
+    if [ "$TEST_USER" = root ]; then bash -l /tmp/ci-cmd.sh
+    else su - "$TEST_USER" -c "bash -l /tmp/ci-cmd.sh"; fi
 }
 
 OPTS="--no-menu -y"

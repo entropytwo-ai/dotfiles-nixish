@@ -32,6 +32,10 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = (import ./packages.nix pkgs { }) ++ [ xtree ];
 
+    # NixOS defines l = "ls -alh" and ll = "ls -l" (mkDefault) and applies them
+    # after interactiveShellInit, which would undo our eza aliases - drop them.
+    environment.shellAliases = lib.mkIf cfg.shellConfig { l = null; ll = null; };
+
     programs.bash.interactiveShellInit = lib.mkIf cfg.shellConfig
       (builtins.readFile ../config/bashrc_append.sh);
     # only takes effect when programs.zsh.enable = true

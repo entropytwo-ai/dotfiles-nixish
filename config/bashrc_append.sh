@@ -28,12 +28,15 @@ export HISTTIMEFORMAT='%m/%d/%y %T '
 _loc=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}LANG=["'"'"']\{0,1\}\([^"'"'"' ]*\).*/\2/p' \
        /etc/default/locale /etc/locale.conf /etc/profile.d/00-dotfiles-nixish-locale.sh 2>/dev/null | head -n 1)
 case "$_loc" in ""|C|C.*|POSIX) _loc=en_US.UTF-8 ;; esac
-_have=$(locale -a 2>/dev/null | tr 'A-Z' 'a-z' | sed 's/utf-8/utf8/')
-if [ -z "$_have" ] || printf '%s\n' "$_have" | grep -qxF "$(printf '%s' "$_loc" | tr 'A-Z' 'a-z' | sed 's/utf-8/utf8/')"; then
+# Test it the way programs see it: bash warns "cannot change locale" when it is
+# missing (also catches a Nix glibc without LOCALE_ARCHIVE, where 'locale -a'
+# would not tell). musl/Alpine accepts any name and never warns.
+_bad=$(LC_ALL="$_loc" bash -c : 2>&1)
+if [ -z "$_bad" ]; then
     export LANG="$_loc"
     export LC_TIME="$_loc"
 fi
-unset _loc _have
+unset _loc _bad
 
 # --- Aliases --------------------------------------------------------------------
 # eza replacement for ls (falls back to exa, then plain ls)

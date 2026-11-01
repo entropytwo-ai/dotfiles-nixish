@@ -175,6 +175,11 @@ ltrim() { local s="$1"; printf '%s' "${s#"${s%%[![:space:]]*}"}"; }
 
 
 have() { command -v "$1" >/dev/null 2>&1; }
+# Package managers and admin tools live in sbin, which a normal user's PATH
+# often lacks (Alpine: /sbin/apk; some su/sudo setups) - add the sbin dirs.
+for _d in /usr/local/sbin /usr/sbin /sbin; do
+    [[ ":$PATH:" == *":$_d:"* || ! -d "$_d" ]] || PATH="$PATH:$_d"
+done; unset _d
 # cowsay/fortune live in /usr/games on Debian/Ubuntu
 export PATH="/usr/local/bin:$PATH:/usr/games"
 
@@ -1171,7 +1176,9 @@ else
     # (sbin dirs appended: they are in secure_path but often not in a user's PATH)
     SUDO=(sudo "$(command -v env)" "PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin")
     step "Requesting sudo (needed for package installs, /usr/local/bin and system settings)"
-    sudo -v || die "Could not obtain sudo privileges."
+    # 'sudo true', not 'sudo -v': -v asks for a password unless EVERY sudoers
+    # rule for the user is NOPASSWD (openSUSE's default "ALL ALL=(ALL) ALL" counts)
+    sudo true || die "Could not obtain sudo privileges."
     # keep sudo alive while we work
     ( while kill -0 $$ 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done ) &
     SUDO_KEEPALIVE=$!
@@ -1548,6 +1555,8 @@ if $OPT_PACKAGES && [[ "$PM" != "none" ]] && [[ ${#TOOLS[@]} -gt 0 ]]; then
 
     # tealdeer/tldr need a page cache before first use
     if [[ " ${TOOLS[*]} " == *" tldr "* ]] && have tldr; then
+        # the Haskell tldr (Debian/Ubuntu) fails when ~/.local/share is missing
+        as_target mkdir -p "$TARGET_HOME/.local/share" 2>/dev/null
         if as_target timeout 90 tldr --update >/dev/null 2>&1; then ok "tldr page cache updated"
         else info "(tldr cache update skipped - run 'tldr --update' later if needed)"; fi
     fi

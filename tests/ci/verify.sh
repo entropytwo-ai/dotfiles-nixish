@@ -25,7 +25,9 @@ check() {  # check "<description>" <command...>
 NOISE='cannot set terminal process group|no job control in this shell|Inappropriate ioctl'
 in_login() {  # in_login <command> - a login session of the user, no rc files beyond the login ones
     if [[ "$U" == root ]]; then bash -lc "$1" </dev/null 2>&1
-    else su - "$U" -c "$1" </dev/null 2>&1; fi
+    # su runs 'bash -l' explicitly: busybox su (Alpine) starts no login shell for
+    # -c and leaves PATH at /bin:/usr/bin - unlike a real login
+    else su - "$U" -c "bash -lc $(printf %q "$1")" </dev/null 2>&1; fi
 }
 ush()  { in_login "TERM=dumb bash -ic $(printf %q "$1")" | grep -Ev "$NOISE"; return "${PIPESTATUS[0]}"; }
 uzsh() { in_login "TERM=dumb zsh -ic $(printf %q "$1")"  | grep -Ev "$NOISE"; return "${PIPESTATUS[0]}"; }
@@ -60,8 +62,8 @@ check "the bash greeting/summary reached the end ('🎉')" grep -q '🎉' "$LOG"
 # ---------------------------------------------------------------------------
 if [[ "$SCENARIO" == rerun ]]; then
     BEFORE="$7" AFTER="$8"
-    if diff -u "$BEFORE" "$AFTER" >/tmp/sums.diff; then pass "second run changed no file in $H"
-    else fail "second run changed files in $H:"; sed 's/^/      /' /tmp/sums.diff; fi
+    if [[ "$(<"$BEFORE")" == "$(<"$AFTER")" ]]; then pass "second run changed no file in $H"
+    else fail "second run changed files in $H:"; comm -23 <(sort "$AFTER") <(sort "$BEFORE") | sed 's/^/      changed\/new: /'; fi
     check "~/.bashrc reported as already up to date" grep -q 'bashrc already up to date' "$LOG"
     check "no new backup files" bash -c "! grep -q 'Backup of the original saved' '$LOG'"
     [[ $FAILS -eq 0 ]] && { printf '\n\033[32mAll checks passed\033[0m\n'; exit 0; }
@@ -90,7 +92,7 @@ if $WANT_TOOLS; then
                        else fail "fortune prints no quote: $out"; fi ;;
             tldr)      expect "tldr shows the tar page (page cache present)" "tldr tar" 'tar (-|--)?[a-z]' ;;
             fastfetch) expect "fastfetch runs" "fastfetch --pipe -s os" '[A-Za-z]' ;;
-            *)         expect "$t runs ($t --version)" "command -v $t >/dev/null && $t --version >/dev/null 2>&1 && echo OK" '^OK$' ;;
+            *)         expect "$t runs ($t --version)" "command -v $t >/dev/null && $t --version 2>&1 </dev/null; echo \"rc=\$?\"" '^rc=0$' ;;
         esac
     done
 else
@@ -153,7 +155,8 @@ if $WANT_SHELL; then
     fi
     # eza theme (only installed together with eza)
     if uout 'command -v eza' | grep -q eza; then
-        if cmp -s "$SRC/config/eza-theme.yml" "$H/.config/eza/theme.yml"; then pass "~/.config/eza/theme.yml installed"
+        # (bash compare: minimal Fedora/Rocky/Arch images have no cmp)
+        if [[ -f "$H/.config/eza/theme.yml" && "$(<"$SRC/config/eza-theme.yml")" == "$(<"$H/.config/eza/theme.yml")" ]]; then pass "~/.config/eza/theme.yml installed"
         else fail "~/.config/eza/theme.yml missing or different from config/eza-theme.yml"; fi
         ver="$(uout 'eza --version' | grep -oE 'v[0-9]+\.[0-9]+' | head -1 | tr -d v)"
         if [[ -n "$ver" ]] && (( ${ver%%.*} > 0 || ${ver#*.} >= 20 )); then
