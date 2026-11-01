@@ -18,6 +18,31 @@ hashes point to the matching commits on `main`.
   block, file ownership, clean checkout, `--list-packages` all installed, and
   that parts not chosen were not done.
 - **`tests/nixos-vm.nix`** is a flake check (`checks.x86_64-linux.nixos-module`).
+- **`tests/ci/known-gaps.txt`** lists tools a distro's repos lack (glances on
+  openSUSE Leap); they show as notes, not failures.
+
+### Fixed (found by the first CI runs)
+
+- **Alpine got no packages:** `apk` is in `/sbin`, which a normal user's PATH
+  can lack. install.sh now adds the sbin directories to PATH.
+- **Alpine:** `duf`, `cowsay` and `tealdeer` are only in edge/testing. The
+  package list can now say `name@testing`, which adds that repo as a tagged one
+  (used only for those packages).
+- **openSUSE asked for a password** even with NOPASSWD sudo: `sudo -v` needs
+  *every* sudoers rule to be NOPASSWD (openSUSE has `ALL ALL=(ALL) ALL`).
+  It is now `sudo true`.
+- **tldr had no pages on Debian 12 / Ubuntu 24.04:** their tldr clients download
+  from an address that no longer exists. When `tldr --update` fails, the static
+  tealdeer release goes to `/usr/local/bin/tldr`. The Haskell tldr also failed
+  without `~/.local/share`, which is now created.
+- **Every rerun made backups on Fedora/Rocky/Arch:** files were compared with
+  `cmp`, which minimal images lack. Now `cksum` (coreutils).
+- **xtree failed on openSUSE** without `find`: `find` (findutils) and `tput`
+  are now prerequisites.
+- **NixOS module:** NixOS's own `l`/`ll` aliases overrode the eza ones with
+  `shellConfig = true`. The module now removes them.
+- **Locale warnings** from the rc block on a Nix glibc without
+  `LOCALE_ARCHIVE`: the locale is now tested with bash itself, not `locale -a`.
 
 ## 2026-10-28: eza theme file — lighter timestamp colour
 

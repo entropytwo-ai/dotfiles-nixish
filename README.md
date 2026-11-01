@@ -622,6 +622,15 @@ draws a tree, the aliases and greeting work without errors, eza uses the theme,
 the rc block exists once, all files belong to the user, and the second run
 changes nothing. A part you did not choose must not have been done.
 
+A tool that a distro's own repositories simply do not have (for example
+glances on openSUSE Leap) is listed in
+[`tests/ci/known-gaps.txt`](tests/ci/known-gaps.txt): install.sh still warns
+you about it, and the test shows it as a note instead of a failure.
+
+On Alpine, `duf`, `cowsay` and `tealdeer` exist only in the edge/testing
+repository. The package list asks for them as `name@testing`, which adds that
+repository as a tagged one, so apk uses it for those packages only.
+
 Run one locally with Docker:
 
 ```bash
