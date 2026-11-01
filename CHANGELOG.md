@@ -41,6 +41,9 @@ hashes point to the matching commits on `main`.
   are now prerequisites.
 - **NixOS module:** NixOS's own `l`/`ll` aliases overrode the eza ones with
   `shellConfig = true`. The module now removes them.
+- **False "fortune has no quote database" warning on openSUSE Leap:** its
+  fortune prints nothing before the locale is set. The check now also accepts
+  `fortune -f` listing quote files.
 - **Locale warnings** from the rc block on a Nix glibc without
   `LOCALE_ARCHIVE`: the locale is now tested with bash itself, not `locale -a`.
 
