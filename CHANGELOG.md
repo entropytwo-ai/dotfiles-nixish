@@ -3,6 +3,19 @@
 What each round of changes added to dotfiles-nixish, newest first. Commit
 hashes point to the matching commits on `main`.
 
+## 2026-10-31: Wait for a busy package manager instead of looking frozen
+
+- On a new Fedora Cloud VM (from proxmox-linux-quick-deploy), the run
+  stopped after `curl (already installed)` with no output. Likely cause:
+  cloud-init's first-boot package upgrade held the rpm/dnf lock, and the
+  installer hides package-manager output, so it waited silently.
+- New `wait_pm_idle`: before package checks/installs it checks for a
+  running cloud-init (`cloud-init status`) or dnf/yum/rpm/zypper/pacman/
+  apt/dpkg process. If one is busy it prints what it is and a progress line
+  every 30 s, then continues when it is free. Max wait 30 min
+  (`DOTFILES_PM_WAIT`), then a warning. Skipped when cloud-init itself
+  started the installer.
+
 ## 2026-10-31: Automatic tests on every distro
 
 - **GitHub Actions** (`.github/workflows/test-install.yml`) runs on every push,

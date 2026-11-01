@@ -452,6 +452,12 @@ Every command is saved with the date and time it ran, shown as
   - `HISTFILE`
 - If the result would fail `bash -n` / `zsh -n`, the file is left
   unchanged.
+- **Busy package manager:** on a freshly booted cloud VM, cloud-init
+  often runs a first-boot package upgrade (Proxmox turns this on by
+  default), or a dnf/apt timer is running. The installer waits for it and
+  says what it is waiting for, instead of sitting silently on the package
+  lock. It gives up waiting after 30 minutes and carries on; set
+  `DOTFILES_PM_WAIT=<seconds>` to change that.
 
 <sub>[↑ Back to contents](#table-of-contents)</sub>
 

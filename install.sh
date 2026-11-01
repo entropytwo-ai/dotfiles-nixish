@@ -672,11 +672,57 @@ plan_dns() {   # normalise NET_DNS into DNS_LIST
 }
 valid_key_arg() { [[ "$1" =~ ^(gh|github): || -f "$1" || "$1" =~ ^(ssh-|ecdsa-|sk-) ]]; }
 
+# ---------------------------------------------------------------- wait for a busy package manager
+# A fresh cloud VM (e.g. from proxmox-linux-quick-deploy) is often still
+# running cloud-init's first-boot package upgrade, or a dnf/apt timer. That
+# holds the package lock, and since install output is hidden the run used to
+# look frozen. Now it says what it is waiting for.
+under_cloud_init() {  # is this script itself started by cloud-init?
+    local p=$$ c
+    while [[ "$p" =~ ^[0-9]+$ && "$p" -gt 1 ]]; do
+        c="$(cat "/proc/$p/comm" 2>/dev/null)" || return 1
+        [[ "$c" == cloud-init* ]] && return 0
+        p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)"
+    done
+    return 1
+}
+
+pm_busy() {  # prints what holds the package manager; fails when it is free
+    local p
+    if have cloud-init && ! under_cloud_init \
+       && [[ "$(cloud-init status 2>/dev/null)" == *running* ]]; then
+        printf 'cloud-init (first-boot setup, usually a package upgrade)'
+        return 0
+    fi
+    have pgrep || return 1
+    p="$(pgrep -a -x 'dnf|dnf5|yum|rpm|zypper|pacman|apt|apt-get|dpkg' 2>/dev/null | head -n1)"
+    [[ -n "$p" ]] || return 1
+    printf '%s' "${p#* }" | cut -c1-70
+}
+
+wait_pm_idle() {
+    local what waited=0 max="${DOTFILES_PM_WAIT:-1800}"
+    [[ "$max" =~ ^[0-9]+$ ]] || max=1800
+    what="$(pm_busy)" || return 0
+    info "Waiting for the package manager - busy with: $what"
+    info "(normal on a freshly booted VM; follow it with: sudo tail -f /var/log/cloud-init-output.log)"
+    while what="$(pm_busy)"; do
+        if (( waited >= max )); then
+            warn "Package manager still busy after ${max}s ($what) - continuing anyway (set DOTFILES_PM_WAIT=seconds to wait longer)."
+            return 0
+        fi
+        sleep 5; waited=$((waited + 5))
+        (( waited % 30 == 0 )) && info "  still waiting ($((waited / 60))m $((waited % 60))s): $what"
+    done
+    ok "Package manager is free (waited ${waited}s)"
+}
+
 # ---------------------------------------------------------------- package manager wrappers
 REFRESHED=false
 pm_refresh() {
     $REFRESHED && return 0
     REFRESHED=true
+    wait_pm_idle
     info "Refreshing package metadata..."
     case "$PM" in
         apt)    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -qq ;;
@@ -690,6 +736,7 @@ pm_refresh() {
 }
 
 pm_install() {  # pm_install pkg... ; returns non-zero on failure, never aborts
+    wait_pm_idle
     case "$PM" in
         apt)    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
                     install -y -qq --no-install-recommends "$@" ;;
@@ -1324,6 +1371,7 @@ if ! get_package_list "$WORKDIR/package_list.txt" || ! load_package_list "$WORKD
         info "No curl or wget yet - installing curl first to download the package list"
         printf '%s\n' "$BOOTSTRAP_LIST" > "$WORKDIR/bootstrap.txt"
         load_package_list "$WORKDIR/bootstrap.txt"
+        wait_pm_idle
         for t in certs curl; do ensure_tool "$t" || true; done
     fi
     if get_package_list "$WORKDIR/package_list.txt" && load_package_list "$WORKDIR/package_list.txt"; then :
@@ -1341,6 +1389,7 @@ if $OPT_DOTFILES && $OPT_PACKAGES; then
     [[ "$PM" == "none" ]] && warn "No supported package manager found - skipping package installs."
     if [[ "$PM" != "none" ]]; then
         step "Installing prerequisites"
+        wait_pm_idle
         enable_epel
         read -ra PREREQS <<<"$(pkg_section prerequisites)"
         nix_batch "${PREREQS[@]}"
